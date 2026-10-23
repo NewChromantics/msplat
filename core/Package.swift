@@ -7,9 +7,15 @@ let package = Package(
     products: [
         .library(name: "MsplatCore", targets: ["MsplatCore"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/NewChromantics/nlohmann_json", branch: "graham/FixSwiftPackage")
+    ],
     targets: [
         .target(
             name: "MsplatCore",
+            dependencies: [
+                .product(name: "json", package: "nlohmann_json")
+            ],
             path: "src",
             resources: [
 				//.copy("Resources/default.metallib")
@@ -17,7 +23,8 @@ let package = Package(
             cxxSettings: [
 				.headerSearchPath("include"),
 				.headerSearchPath("metal"),
-                .unsafeFlags(["-std=c++17"]),
+                .define("_LIBCPP_ENABLE_CXX17_REMOVED_FEATURES", to: "1"),
+                .unsafeFlags(["-std=c++17", "-stdlib=libc++"]),
             ],
             linkerSettings: [
                 .linkedFramework("Metal"),
