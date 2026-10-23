@@ -16,23 +16,26 @@ let package = Package(
             dependencies: [
                 .product(name: "json", package: "nlohmann_json")
             ],
-            path: "src",
+            path: nil,
+            exclude: ["include"],  // Exclude C++ headers from module
+            sources: nil,
             resources: [
-				//.copy("Resources/default.metallib")
-			],
+                //.copy("Resources/default.metallib")
+            ],
+            publicHeadersPath: "c_api",  // expose CAPI
             cxxSettings: [
-				.headerSearchPath("include"),
-				.headerSearchPath("metal"),
                 .define("_LIBCPP_ENABLE_CXX17_REMOVED_FEATURES", to: "1"),
+                .headerSearchPath("include"),
+                .headerSearchPath("metal"),
                 .unsafeFlags(["-std=c++17", "-stdlib=libc++"]),
             ],
             linkerSettings: [
+                .linkedFramework("Foundation"),
                 .linkedFramework("Metal"),
                 .linkedFramework("MetalKit"),
                 .linkedFramework("MetalPerformanceShaders"),
-                .linkedFramework("Foundation"),
-                .linkedFramework("ImageIO"),
                 .linkedFramework("CoreGraphics"),
+                .linkedFramework("ImageIO"),
                 .unsafeFlags(["-lc++"]),
             ]
         ),
