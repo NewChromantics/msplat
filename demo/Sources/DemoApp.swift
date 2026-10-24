@@ -135,7 +135,7 @@ func computeOrbitParams(_ poses: [[Float]]) -> OrbitParams {
 final class Engine: ObservableObject {
     @Published var image: NSImage?
     @Published var iteration: Int = 0
-    @Published var totalIterations: Int = 2_000
+    @Published var totalIterations: Int = 10_000
     @Published var splatCount: Int = 0
     @Published var msPerStep: Float = 0
     @Published var fps: Float = 0
@@ -164,14 +164,16 @@ final class Engine: ObservableObject {
         }
     }
 
-    private func beginTraining(datasetPath: String) {
+    private func beginTraining(datasetPath: String) 
+	{
+		let totalIterations = Int32(self.totalIterations)
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
           autoreleasepool {
 
             let dataset = GaussianDataset(path: datasetPath)
             var config = TrainingConfig()
-            config.iterations = 2_000
+            config.iterations = totalIterations
             config.numDownscales = 0
             config.bgColor = (0, 0, 0)
             let trainer = GaussianTrainer(dataset: dataset, config: config)
@@ -182,11 +184,11 @@ final class Engine: ObservableObject {
             var batchStart = CACurrentMediaTime()
             var batchSteps = 0
 
-            for i in 0..<2_000 {
+            for i in 0..<config.iterations {
                 let stats = trainer.step()
                 batchSteps += 1
 
-                if i % 25 == 0 || i == 1_999 {
+                if i % 25 == 0 || i == config.iterations-1 {
                     let batchEnd = CACurrentMediaTime()
                     let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 
