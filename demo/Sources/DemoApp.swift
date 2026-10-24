@@ -151,12 +151,14 @@ final class Engine: ObservableObject {
         countdown = 5
 
         // 5-second countdown on main thread
+		//	why?
         Task { @MainActor in
+			/*
             for s in stride(from: 4, through: 0, by: -1) {
                 try? await Task.sleep(for: .seconds(1))
                 self.countdown = s
                 self.phase = .countdown(s)
-            }
+            }*/
             self.phase = .loading
             self.beginTraining(datasetPath: datasetPath)
         }
