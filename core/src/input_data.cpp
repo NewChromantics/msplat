@@ -198,7 +198,12 @@ void InputData::saveCameras(const std::string &filename, bool keepCrs) const {
 // ── Format dispatcher ───────────────────────────────────────────────────────
 
 InputData inputDataFromX(const std::string &path, const std::string &colmapImagePath) {
+	
     fs::path root(path);
+
+	if (!fs::exists(root) )
+		throw std::runtime_error("Path does not exist; " + path);
+	
 
     // Nerfstudio: transforms.json
     if (fs::exists(root / "transforms.json"))
@@ -212,6 +217,7 @@ InputData inputDataFromX(const std::string &path, const std::string &colmapImage
     if (fs::exists(root / "keyframes" / "corrected_cameras") || fs::exists(root / "cameras.json"))
         return loaders::loadPolycam(path);
 
+	//	misleading error when files dont exist.
     throw std::runtime_error("Unrecognized dataset format in: " + path +
         "\nSupported: COLMAP (cameras.bin), Nerfstudio (transforms.json), Polycam (keyframes/)");
 }
