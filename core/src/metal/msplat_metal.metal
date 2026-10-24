@@ -1770,7 +1770,7 @@ kernel void project_and_sh_forward_kernel(
     // SH args
     constant uint& degree,
     constant uint& degrees_to_use,
-    constant float3& cam_pos,
+    constant float4& cam_pos,
     constant float* features_dc,
     constant float* features_rest,
     device float* colors,
@@ -1834,7 +1834,7 @@ kernel void project_and_sh_forward_kernel(
     aabb[idx * 2 + 1] = aabb_y;
 
     // SH: compute colors for non-culled gaussians (reuse p_world from registers)
-    float3 viewdir = normalize(p_world - cam_pos);
+    float3 viewdir = normalize(p_world - cam_pos.xyz);
     const uint num_channels = 3;
     uint num_bases = num_sh_bases(degree);
     uint dc_idx = num_channels * idx;
