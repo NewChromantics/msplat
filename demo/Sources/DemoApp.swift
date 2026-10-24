@@ -417,7 +417,12 @@ struct DemoApp: App {
 
     init() {
         let args = CommandLine.arguments
-        datasetPath = args.count > 1 ? args[1] : "datasets/mipnerf360/garden"
+		
+		if let url = Bundle.module.url(forResource: "datasets/mipnerf360/garden", withExtension: nil) {
+			datasetPath = url.path  // Convert URL to path string
+		} else {
+			datasetPath = args.count > 1 ? args[1] : "datasets/mipnerf360/garden"
+		}
     }
 
     var body: some Scene {

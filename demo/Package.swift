@@ -11,10 +11,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "DemoApp",
-            dependencies: [
-                .product(name: "Msplat", package: "swift"),
-            ],
-            path: "Sources"
+			dependencies: [
+				.product(name: "Msplat", package: "swift"),
+			], 
+			path: "Sources",
+			resources:[.copy("../../datasets/")]
         ),
     ]
 )
