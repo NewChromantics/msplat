@@ -78,15 +78,23 @@ public enum MsplatRuntime {
 
 
 /// Protocol for all dataset source types (Nerfstudio, COLMAP, Polycam, etc.)
-public protocol SplatDatasetSource {
-    /// Load the dataset from its source
-    func load() async throws -> InputData
+public protocol SplatDatasetSource 
+{
+	static func Detect(rootPath:URL) -> Bool
+	
+	func load() async throws -> InputData
 }
 
 // MARK: - NerfStudio Dataset Source Adapter
 
 /// Adapter to convert NerfStudioData package types to MsplatCore InputData
 extension NerfstudioDatasetSource: SplatDatasetSource {
+    public static func Detect(rootPath: URL) -> Bool {
+        let fm = FileManager.default
+        let transformsPath = rootPath.appendingPathComponent("transforms.json").path
+        return fm.fileExists(atPath: transformsPath)
+    }
+    
     public func load() async throws -> InputData {
         // Load the dataset using the NerfStudioData package
         let nerfDataset = try await loadDataset()
@@ -149,6 +157,24 @@ public final class ColmapDatasetSource: SplatDatasetSource {
         self.imageSourcePath = imageSourcePath
     }
     
+    public static func Detect(rootPath: URL) -> Bool {
+        let fm = FileManager.default
+        
+        // Check for cameras.bin in root directory
+        let camerasInRoot = rootPath.appendingPathComponent("cameras.bin").path
+        if fm.fileExists(atPath: camerasInRoot) {
+            return true
+        }
+        
+        // Check for cameras.bin in sparse/0 directory (common COLMAP structure)
+        let camerasInSparse = rootPath
+            .appendingPathComponent("sparse")
+            .appendingPathComponent("0")
+            .appendingPathComponent("cameras.bin")
+            .path
+        return fm.fileExists(atPath: camerasInSparse)
+    }
+    
     /// Load InputData from a COLMAP dataset (cameras.bin format)
     /// - Parameters:
     ///   - path: Path to the dataset directory
@@ -170,6 +196,23 @@ public final class PolycamDatasetSource: SplatDatasetSource {
     
     public init(url: URL) {
         self.url = url
+    }
+    
+    public static func Detect(rootPath: URL) -> Bool {
+        let fm = FileManager.default
+        
+        // Check for keyframes/corrected_cameras
+        let correctedCameras = rootPath
+            .appendingPathComponent("keyframes")
+            .appendingPathComponent("corrected_cameras")
+            .path
+        if fm.fileExists(atPath: correctedCameras) {
+            return true
+        }
+        
+        // Check for cameras.json
+        let camerasJson = rootPath.appendingPathComponent("cameras.json").path
+        return fm.fileExists(atPath: camerasJson)
     }
     
     /// Load InputData from a Polycam dataset (keyframes/corrected_cameras or cameras.json format)
@@ -220,22 +263,16 @@ public enum SplatDatasetLoader {
             throw LoaderError.pathDoesNotExist(url.path)
         }
         
-        func exists(_ parts: String...) -> Bool {
-            fm.fileExists(atPath: parts.reduce(url) { $0.appendingPathComponent($1) }.path)
-        }
-        
-        // Detect Nerfstudio format
-        if exists("transforms.json") {
+        // Try each dataset source using their Detect methods
+        if NerfstudioDatasetSource.Detect(rootPath: url) {
             return NerfstudioDatasetSource(url: url)
         }
         
-        // Detect COLMAP format
-        if exists("cameras.bin") || exists("sparse", "0", "cameras.bin") {
+        if ColmapDatasetSource.Detect(rootPath: url) {
             return ColmapDatasetSource(url: url, imageSourcePath: colmapImagePath)
         }
         
-        // Detect Polycam format
-        if exists("keyframes", "corrected_cameras") || exists("cameras.json") {
+        if PolycamDatasetSource.Detect(rootPath: url) {
             return PolycamDatasetSource(url: url)
         }
         
