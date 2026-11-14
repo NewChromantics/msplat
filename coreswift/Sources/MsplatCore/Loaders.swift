@@ -146,10 +146,9 @@ extension ColmapDatasetSource: SplatDatasetSource
 		let inputData = InputData()
 		
 		// Convert cameras
-		for colmapCamera in colmapDataset.cameras {
-			var cameraMeta = CameraMeta(imageSource: .url(
-				colmapDataset.baseDirectory.appendingPathComponent(colmapCamera.imagePath)
-			))
+		for colmapCamera in colmapDataset.cameras 
+		{
+			var cameraMeta = CameraMeta(imageSource: .url(colmapCamera.imagePath))
 			
 			cameraMeta.width = colmapCamera.width
 			cameraMeta.height = colmapCamera.height

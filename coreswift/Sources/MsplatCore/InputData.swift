@@ -4,9 +4,19 @@
 import Foundation
 
 /// Image source for camera metadata
-public enum ImageSource {
-    case url(URL)
-    case data(RGBImage)
+public enum ImageSource 
+{
+	case url(URL)
+	case data(RGBImage)
+	
+	var url : URL?
+	{
+		switch self
+		{
+			case .url(let url):	return url
+			case .data(let data):	return nil
+		}
+	}
 }
 
 /// Camera metadata: fixed data loaded from dataset (intrinsics, pose, dimensions).
@@ -177,20 +187,26 @@ public final class SplatInputData {
     /// Number of cameras in the dataset
     public var numCameras: Int { cameras.count }
     
-    public init() {}
-    
+    init()
+	{
+	}
     /// Create SplatInputData from InputData by loading camera images.
     /// - Parameters:
     ///   - inputData: The metadata-only dataset
     ///   - downscaleFactor: Optional downscale factor to apply during loading (default: 1.0)
-    public init(from inputData: InputData, downscaleFactor: Float = 1.0) throws {
+	public init(from inputData: InputData, downscaleFactor: Float = 1.0, onLoading:@escaping(String,URL?)->Void) async throws 
+	{
         self.scale = inputData.scale
         self.translation = inputData.translation
         self.points = inputData.points
         
         // Load all camera images
-        for meta in inputData.cameras {
-            let runtimeCam = try RuntimeCamera(meta: meta, downscaleFactor: downscaleFactor)
+		//	this needs to be async to load in parral;
+		for (cameraIndex,cameraMeta) in inputData.cameras.enumerated()
+		{
+			let cameraName = "Camera \(cameraIndex)"
+			onLoading(cameraName,cameraMeta.imageSource.url)
+            let runtimeCam = try RuntimeCamera(meta: cameraMeta, downscaleFactor: downscaleFactor)
             cameras.append(runtimeCam)
         }
     }

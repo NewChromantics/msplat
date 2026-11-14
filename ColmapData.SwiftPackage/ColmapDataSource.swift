@@ -103,7 +103,7 @@ public struct ColmapDatasetSource
 				p1: cameraData.p1,
 				p2: cameraData.p2,
 				transformMatrix: transform,
-				imagePath: imagePath.path()
+				imagePath: imagePath
 			)
 			
 			cameras.append(camera)
@@ -239,60 +239,36 @@ public struct ColmapDatasetSource
 	
 	private func readImagesBin(_ url: URL) throws -> [ImageData] {
 		let data = try Data(contentsOf: url)
-		var offset = 0
+		var reader = BinaryReader(data)
 		
 		// Read number of images
-		guard data.count >= 8 else
-		{
-			throw ColmapError("Not enough camera images \(data.count)/8")
-		}
-		let numImages = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self) }
-		offset += 8
+		let numImages = try reader.read(UInt64.self)
 		
 		var images: [ImageData] = []
+		images.reserveCapacity(Int(numImages))
 		
 		for _ in 0..<numImages {
-			guard offset + 64 <= data.count else { throw ColmapError("Bad data - image data") }
-			
-			let imageID = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
-			offset += 4
+			let imageID = try reader.read(UInt32.self)
 			
 			// Read quaternion (w, x, y, z)
-			let qw = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
-			let qx = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
-			let qy = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
-			let qz = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
+			let qw = try reader.readF64()
+			let qx = try reader.readF64()
+			let qy = try reader.readF64()
+			let qz = try reader.readF64()
 			
 			// Read translation
-			let tx = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
-			let ty = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
-			let tz = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
+			let tx = try reader.readF64()
+			let ty = try reader.readF64()
+			let tz = try reader.readF64()
 			
-			let cameraID = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
-			offset += 4
+			let cameraID = try reader.read(UInt32.self)
 			
 			// Read null-terminated image name
-			var nameBytes: [UInt8] = []
-			while offset < data.count {
-				let byte = data[offset]
-				offset += 1
-				if byte == 0 { break }
-				nameBytes.append(byte)
-			}
-			let name = String(bytes: nameBytes, encoding: .utf8) ?? ""
+			let name = try reader.readCString()
 			
 			// Skip point2D data (not needed for camera reconstruction)
-			guard offset + 8 <= data.count else { throw ColmapError("Bad data - point2d") }
-			let numPoints2D = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self) }
-			offset += 8
-			offset += Int(numPoints2D) * 24  // Each point2D is 24 bytes (x, y, point3D_id)
+			let numPoints2D = try reader.read(UInt64.self)
+			try reader.skip(Int(numPoints2D) * 24)  // Each point2D is 24 bytes (x, y, point3D_id)
 			
 			images.append(ImageData(
 				id: Int(imageID),
@@ -308,46 +284,37 @@ public struct ColmapDatasetSource
 	
 	private func readPoints3DBin(_ url: URL) throws -> ColmapPointCloud {
 		let data = try Data(contentsOf: url)
-		var offset = 0
+		var reader = BinaryReader(data)
 		
 		// Read number of points
-		guard data.count >= 8 else { throw ColmapError("Bad data") }
-		let numPoints = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self) }
-		offset += 8
+		let numPoints = try reader.read(UInt64.self)
 		
 		var positions: [Float] = []
 		var colors: [UInt8] = []
 		
+		positions.reserveCapacity(Int(numPoints) * 3)
+		colors.reserveCapacity(Int(numPoints) * 3)
+		
 		for _ in 0..<numPoints {
-			guard offset + 43 <= data.count else { break }
-			
 			// Skip point3D ID
-			offset += 8
+			_ = try reader.read(UInt64.self)
 			
 			// Read XYZ
-			let x = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
-			let y = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
-			let z = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Double.self) }
-			offset += 8
+			let x = try reader.readF64()
+			let y = try reader.readF64()
+			let z = try reader.readF64()
 			
 			// Read RGB
-			let r = data[offset]
-			offset += 1
-			let g = data[offset]
-			offset += 1
-			let b = data[offset]
-			offset += 1
+			let r = try reader.read(UInt8.self)
+			let g = try reader.read(UInt8.self)
+			let b = try reader.read(UInt8.self)
 			
 			// Skip error
-			offset += 8
+			_ = try reader.readF64()
 			
 			// Skip track data
-			guard offset + 8 <= data.count else { break }
-			let trackLength = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self) }
-			offset += 8
-			offset += Int(trackLength) * 8  // Each track element is 8 bytes
+			let trackLength = try reader.read(UInt64.self)
+			try reader.skip(Int(trackLength) * 8)  // Each track element is 8 bytes
 			
 			positions.append(contentsOf: [Float(x), Float(y), Float(z)])
 			colors.append(contentsOf: [r, g, b])

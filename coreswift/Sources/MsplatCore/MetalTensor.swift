@@ -24,9 +24,14 @@ enum DType: UInt8 {
     }
 }
 
-struct MsplatError: Error, CustomStringConvertible {
-    let description: String
-    init(_ message: String) { description = message }
+struct MsplatError: LocalizedError
+{
+	let errorDescription : String?
+
+	init(_ message: String)
+	{
+		errorDescription = message 
+	}
 }
 
 /// Backing store for CPU-only tensors.

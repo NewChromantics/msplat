@@ -60,8 +60,8 @@ public struct ColmapCameraWithTransform {
 	public var p2: Float
 	/// 4x4 row-major camera-to-world transform matrix (OpenGL convention: Y-up, Z-back)
 	public var transformMatrix: [Float]
-	/// Relative path to the image file
-	public var imagePath: String
+	
+	public var imagePath : URL	//	full path
 	
 	public init(
 		id: Int,
@@ -77,7 +77,7 @@ public struct ColmapCameraWithTransform {
 		p1: Float = 0,
 		p2: Float = 0,
 		transformMatrix: [Float],
-		imagePath: String
+		imagePath: URL
 	) {
 		self.id = id
 		self.width = width
