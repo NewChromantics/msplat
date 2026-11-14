@@ -7,7 +7,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Float32 RGB image, HWC, values in [0, 1].
-struct RGBImage {
+public struct RGBImage {
     var data: [Float] = []
     var width = 0
     var height = 0
