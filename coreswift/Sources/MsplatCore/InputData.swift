@@ -49,15 +49,19 @@ public final class RuntimeCamera
     var cachedCamPos: (Float, Float, Float) = (0, 0, 0)
     var cachedFovX: Float = 0, cachedFovY: Float = 0
 
-    public init(meta: CameraMeta, downscaleFactor: Float = 1.0) throws {
+	public init(meta: CameraMeta, downscaleFactor: Float = 1.0,copyImage:RGBImage?=nil) throws 
+	{
+		func LoadImage() throws -> RGBImage
+		{
+			switch meta.imageSource 
+			{
+				case .url(let url):		return try RGBImage(contentsOf: url)
+				case .data(let img):	return img
+			}
+		}
+					 
         // Load raw image from source
-        var raw: RGBImage
-        switch meta.imageSource {
-        case .url(let url):
-            raw = try RGBImage(contentsOf: url)
-        case .data(let img):
-            raw = img
-        }
+		var raw = try copyImage ?? LoadImage()
         
         // Make meta mutable for processing
         var processedMeta = meta
@@ -194,20 +198,43 @@ public final class SplatInputData {
     /// - Parameters:
     ///   - inputData: The metadata-only dataset
     ///   - downscaleFactor: Optional downscale factor to apply during loading (default: 1.0)
-	public init(from inputData: InputData, downscaleFactor: Float = 1.0, onLoading:@escaping(String,URL?)->Void) async throws 
+	public init(from inputData: InputData, downscaleFactor: Float = 1.0, onLoading:@escaping(String,URL?)async->Void) async throws 
 	{
         self.scale = inputData.scale
         self.translation = inputData.translation
         self.points = inputData.points
         
-        // Load all camera images
-		//	this needs to be async to load in parral;
-		for (cameraIndex,cameraMeta) in inputData.cameras.enumerated()
+		struct LoadedCamera
 		{
-			let cameraName = "Camera \(cameraIndex)"
-			onLoading(cameraName,cameraMeta.imageSource.url)
-            let runtimeCam = try RuntimeCamera(meta: cameraMeta, downscaleFactor: downscaleFactor)
-            cameras.append(runtimeCam)
+			var index : Int
+			var camera : RuntimeCamera
+		}
+		
+        // Load all camera images in parallel
+        try await withThrowingTaskGroup(of: LoadedCamera.self) 
+		{ 
+			group in
+            for (cameraIndex, cameraMeta) in inputData.cameras.enumerated() {
+                group.addTask {
+                    let cameraName = "Camera \(cameraIndex)"
+                    await onLoading(cameraName, cameraMeta.imageSource.url)
+                    let runtimeCam = try RuntimeCamera(meta: cameraMeta, downscaleFactor: downscaleFactor)
+					return LoadedCamera(index: cameraIndex, camera: runtimeCam)
+                }
+            }
+            
+            // Collect results and store them in order
+			var cameraResults: [LoadedCamera] = []
+            for try await result in group 
+			{
+				let cameraName = "Camera \(result.index) Done"
+				await onLoading(cameraName, nil)
+                cameraResults.append(result)
+            }
+            
+            // Sort by original index to maintain order
+            cameraResults.sort { $0.index < $1.index }
+            self.cameras = cameraResults.map { $0.camera }
         }
     }
     

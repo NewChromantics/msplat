@@ -2,7 +2,7 @@ import Foundation
 import NerfStudioData
 import ColmapData
 import PolycamData
-
+import Accelerate
 
 
 
@@ -236,7 +236,7 @@ public final class SplatTrainer {
     }
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
-    private func poseCamera(_ camToWorld: [Float], _ refCameraIndex: Int) throws -> RuntimeCamera? {
+    private func GetNewRuntimeCamera(_ camToWorld: [Float], _ refCameraIndex: Int) throws -> RuntimeCamera? {
         precondition(camToWorld.count == 16, "camToWorld must have 16 elements")
         guard dataset.cameras.indices.contains(refCameraIndex) else { return nil }
         let refCam = dataset.cameras[refCameraIndex]
@@ -246,7 +246,7 @@ public final class SplatTrainer {
         newMeta.camToWorld = camToWorld
         
         // Create runtime camera with new meta
-        let cam = try RuntimeCamera(meta: newMeta)
+		let cam = try RuntimeCamera(meta: newMeta,copyImage:refCam.image)
         // Share image pyramids and GPU cache from reference camera
         cam.imagePyramids = refCam.imagePyramids
         cam.gpuImageCache = refCam.gpuImageCache
@@ -258,7 +258,7 @@ public final class SplatTrainer {
     /// Render from an arbitrary camera-to-world pose (4x4 row-major, OpenGL convention),
     /// using the intrinsics of a reference training camera.
     public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0) throws -> SplatImage? {
-        guard let cam = try poseCamera(camToWorld, refCameraIndex) else { return nil }
+        guard let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex) else { return nil }
         return renderToImage(cam)
     }
 
@@ -267,19 +267,15 @@ public final class SplatTrainer {
     @discardableResult
     public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0,
                                into rgba: UnsafeMutablePointer<UInt8>?) throws -> (width: Int, height: Int) {
-        guard let cam = try poseCamera(camToWorld, refCameraIndex) else { return (0, 0) }
+        guard let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex) else { return (0, 0) }
         let rgb = model.render(cam, step: currentStep)
         msplatGpuSync()
         let h = rgb.size(0), w = rgb.size(1)
         guard let out = rgba else { return (w, h) }
-        // Unified memory: read the GPU tensor directly
-        let src = rgb.floats()
-        for i in 0..<(w * h) {
-            out[i * 4 + 0] = unitToByte(src[i * 3 + 0])
-            out[i * 4 + 1] = unitToByte(src[i * 3 + 1])
-            out[i * 4 + 2] = unitToByte(src[i * 3 + 2])
-            out[i * 4 + 3] = 255
-        }
+        
+        // Convert RGB float to RGBA8
+        convertRGBFloatToRGBA8_Accelerate(rgb.floats(), out, w * h)
+        
         return (w, h)
     }
 
@@ -308,3 +304,93 @@ public final class SplatTrainer {
 func unitToByte(_ v: Float) -> UInt8 {
     UInt8(Float.minimum(Float.maximum(v, 0), 1) * 255)
 }
+
+/// Convert RGB float32 tensor to RGBA8 buffer.
+/// - Parameters:
+///   - src: Source RGB float data (normalized 0-1), HWC layout
+///   - dest: Destination RGBA8 buffer (must be at least pixelCount * 4 bytes)
+///   - pixelCount: Number of pixels to convert
+@inline(__always)
+func convertRGBFloatToRGBA8(_ src: UnsafePointer<Float>, 
+                            _ dest: UnsafeMutablePointer<UInt8>, 
+                            _ pixelCount: Int) {
+    // Process in chunks for better cache performance
+    let chunkSize = 1024
+    for chunkStart in stride(from: 0, to: pixelCount, by: chunkSize) {
+        let chunkEnd = min(chunkStart + chunkSize, pixelCount)
+        
+        for i in chunkStart..<chunkEnd {
+            let srcIdx = i * 3
+            let dstIdx = i * 4
+            
+            // Load RGB values
+            let r = src[srcIdx]
+            let g = src[srcIdx + 1]
+            let b = src[srcIdx + 2]
+            
+            // Clamp and convert to bytes (compiler can vectorize this)
+            dest[dstIdx]     = UInt8(min(max(r, 0), 1) * 255)
+            dest[dstIdx + 1] = UInt8(min(max(g, 0), 1) * 255)
+            dest[dstIdx + 2] = UInt8(min(max(b, 0), 1) * 255)
+            dest[dstIdx + 3] = 255
+        }
+    }
+}
+
+// Alternative implementations for benchmarking:
+
+/// Accelerate-based vectorized conversion (fastest for large images).
+/// Requires: import Accelerate
+
+@inline(__always)
+func convertRGBFloatToRGBA8_Accelerate(_ src: UnsafePointer<Float>,
+                                       _ dest: UnsafeMutablePointer<UInt8>,
+                                       _ pixelCount: Int) {
+    var tempR = [Float](repeating: 0, count: pixelCount)
+    var tempG = [Float](repeating: 0, count: pixelCount)
+    var tempB = [Float](repeating: 0, count: pixelCount)
+    
+    // Deinterleave RGB
+    for i in 0..<pixelCount {
+        tempR[i] = src[i * 3]
+        tempG[i] = src[i * 3 + 1]
+        tempB[i] = src[i * 3 + 2]
+    }
+    
+    // Scale and clamp using Accelerate
+    var scale: Float = 255.0
+    var zero: Float = 0.0
+    var twoFiftyFive: Float = 255.0
+    
+    vDSP_vsmul(tempR, 1, &scale, &tempR, 1, vDSP_Length(pixelCount))
+    vDSP_vsmul(tempG, 1, &scale, &tempG, 1, vDSP_Length(pixelCount))
+    vDSP_vsmul(tempB, 1, &scale, &tempB, 1, vDSP_Length(pixelCount))
+    
+    vDSP_vclip(tempR, 1, &zero, &twoFiftyFive, &tempR, 1, vDSP_Length(pixelCount))
+    vDSP_vclip(tempG, 1, &zero, &twoFiftyFive, &tempG, 1, vDSP_Length(pixelCount))
+    vDSP_vclip(tempB, 1, &zero, &twoFiftyFive, &tempB, 1, vDSP_Length(pixelCount))
+    
+    // Convert to UInt8 and interleave RGBA
+    for i in 0..<pixelCount {
+        dest[i * 4]     = UInt8(tempR[i])
+        dest[i * 4 + 1] = UInt8(tempG[i])
+        dest[i * 4 + 2] = UInt8(tempB[i])
+        dest[i * 4 + 3] = 255
+    }
+}
+
+
+/// Simple unrolled version (good baseline for small images).
+
+@inline(__always)
+func convertRGBFloatToRGBA8_Simple(_ src: UnsafePointer<Float>,
+                                   _ dest: UnsafeMutablePointer<UInt8>,
+                                   _ pixelCount: Int) {
+    for i in 0..<pixelCount {
+        dest[i * 4]     = unitToByte(src[i * 3])
+        dest[i * 4 + 1] = unitToByte(src[i * 3 + 1])
+        dest[i * 4 + 2] = unitToByte(src[i * 3 + 2])
+        dest[i * 4 + 3] = 255
+    }
+}
+
