@@ -232,7 +232,7 @@ final class Engine: ObservableObject {
             }
 
             // Phase 2: Smooth circular orbit with zero-copy render
-            let poses = (0..<dataset.numCameras).compactMap { dataset.cameraPose(at: $0) }
+            let poses = dataset.cameras.map { $0.meta.camToWorld }
             let orbit = computeOrbitParams(poses)
             var frameCount = 0
             var fpsTimer = CACurrentMediaTime()

@@ -24,34 +24,35 @@ public struct RGBImage {
         self.width = width
         self.height = height
     }
+    
+    /// Load an RGB image from a file URL
+    init(contentsOf url: URL) throws {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw MsplatError("Failed to load image: \(url.path)")
+        }
+        guard let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw MsplatError("Failed to decode image: \(url.path)")
+        }
+        let w = cg.width, h = cg.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        rgba.withUnsafeMutableBytes { buf in
+            let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                bytesPerRow: w * 4, space: cs,
+                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        var pixels = [Float](repeating: 0, count: w * h * 3)
+        for i in 0..<(w * h) {
+            pixels[i * 3 + 0] = Float(rgba[i * 4 + 0]) / 255.0
+            pixels[i * 3 + 1] = Float(rgba[i * 4 + 1]) / 255.0
+            pixels[i * 3 + 2] = Float(rgba[i * 4 + 2]) / 255.0
+        }
+        
+        // Use the data/width/height initializer for validation
+        try self.init(data: pixels, width: w, height: h)
+    }
 }
-
-func imreadRGB(_ path: String) throws -> RGBImage {
-    let url = URL(fileURLWithPath: path) as CFURL
-    guard let source = CGImageSourceCreateWithURL(url, nil) else {
-        throw MsplatError("Failed to load image: \(path)")
-    }
-    guard let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-        throw MsplatError("Failed to decode image: \(path)")
-    }
-    let w = cg.width, h = cg.height
-    var rgba = [UInt8](repeating: 0, count: w * h * 4)
-    let cs = CGColorSpaceCreateDeviceRGB()
-    rgba.withUnsafeMutableBytes { buf in
-        let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8,
-                            bytesPerRow: w * 4, space: cs,
-                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-    }
-    var pixels = [Float](repeating: 0, count: w * h * 3)
-    for i in 0..<(w * h) {
-        pixels[i * 3 + 0] = Float(rgba[i * 4 + 0]) / 255.0
-        pixels[i * 3 + 1] = Float(rgba[i * 4 + 1]) / 255.0
-        pixels[i * 3 + 2] = Float(rgba[i * 4 + 2]) / 255.0
-    }
-    return try RGBImage(data: pixels, width: w, height: h)
-}
-
 
 /// Area-based (box filter) resize.
 func resizeArea(_ src: RGBImage, _ dstW: Int, _ dstH: Int) -> RGBImage {
