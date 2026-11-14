@@ -13,13 +13,19 @@ let package = Package(
 		[
 			.package(name: "NerfStudioData", path: "../NerfStudioData.SwiftPackage"),
 			.package(name: "ColmapData", path: "../ColmapData.SwiftPackage"),
-			.package(name: "PolycamData", path: "../PolycamData.SwiftPackage")
+			.package(name: "PolycamData", path: "../PolycamData.SwiftPackage"),
+			.package(url: "https://github.com/NewChromantics/CoreGraphicsExtensions.SwiftPackage", branch:"main")
 		]
 	,
     targets: [
         .target(
             name: "MsplatCore",
-            dependencies: ["NerfStudioData","ColmapData","PolycamData"],
+            dependencies: [
+				"NerfStudioData",
+				"ColmapData",
+				"PolycamData",
+				.product(name: "CoreGraphicsExtensions", package: "CoreGraphicsExtensions.SwiftPackage")
+				],
             path: "Sources/MsplatCore",
             resources: [
                 // Copied, not processed: compiled at runtime unless a precompiled

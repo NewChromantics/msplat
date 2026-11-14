@@ -5,6 +5,53 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import CoreGraphicsExtensions
+
+
+
+extension CGImage {
+    /// Export RGB float data with values in the range [0, 1].
+    /// - Returns: A tuple containing the float array (HWC format), width, and height
+    func exportRGBFloat() -> (data: [Float], width: Int, height: Int) {
+        let w = width
+        let h = height
+        
+        // Create RGBA buffer
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        rgba.withUnsafeMutableBytes { buf in
+            let context = CGContext(
+                data: buf.baseAddress,
+                width: w,
+                height: h,
+                bitsPerComponent: 8,
+                bytesPerRow: w * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            )!
+            context.draw(self, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        
+        // Convert to RGB float [0, 1]
+        var pixels = [Float](repeating: 0, count: w * h * 3)
+        for i in 0..<(w * h) {
+            pixels[i * 3 + 0] = Float(rgba[i * 4 + 0]) / 255.0
+            pixels[i * 3 + 1] = Float(rgba[i * 4 + 1]) / 255.0
+            pixels[i * 3 + 2] = Float(rgba[i * 4 + 2]) / 255.0
+        }
+        
+        return (data: pixels, width: w, height: h)
+    }
+    
+    /// Export as RGBImage structure.
+    /// - Returns: An RGBImage with float RGB values in [0, 1]
+    /// - Throws: If the image dimensions are invalid
+    func exportRGBImage() throws -> RGBImage {
+        let (data, width, height) = exportRGBFloat()
+        return try RGBImage(data: data, width: width, height: height)
+    }
+}
 
 /// Float32 RGB image, HWC, values in [0, 1].
 public struct RGBImage {
@@ -26,31 +73,15 @@ public struct RGBImage {
     }
     
     /// Load an RGB image from a file URL
-    init(contentsOf url: URL) throws {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+    init(contentsOf url: URL) throws 
+	{
+		guard let cg = CGImage.load(contentsOf: url) else
+		{
             throw MsplatError("Failed to load image: \(url.path)")
         }
-        guard let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            throw MsplatError("Failed to decode image: \(url.path)")
-        }
-        let w = cg.width, h = cg.height
-        var rgba = [UInt8](repeating: 0, count: w * h * 4)
-        let cs = CGColorSpaceCreateDeviceRGB()
-        rgba.withUnsafeMutableBytes { buf in
-            let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8,
-                                bytesPerRow: w * 4, space: cs,
-                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-        }
-        var pixels = [Float](repeating: 0, count: w * h * 3)
-        for i in 0..<(w * h) {
-            pixels[i * 3 + 0] = Float(rgba[i * 4 + 0]) / 255.0
-            pixels[i * 3 + 1] = Float(rgba[i * 4 + 1]) / 255.0
-            pixels[i * 3 + 2] = Float(rgba[i * 4 + 2]) / 255.0
-        }
-        
-        // Use the data/width/height initializer for validation
-        try self.init(data: pixels, width: w, height: h)
+		let rgb = cg.exportRGBFloat()
+
+		try self.init(data: rgb.data, width: rgb.width, height: rgb.height)
     }
 }
 
