@@ -223,14 +223,14 @@ public enum SplatDatasetLoader {
 public final class SplatTrainer {
     private let model: Model
     private let config: MsplatConfig
-    private let dataset: InputData   // retained: no dangling dataset as in the C++
+    private let dataset: SplatInputData   // retained: no dangling dataset as in the C++
     private var currentStep = 0
 
     private var camIndices: [Int]
     private var camIterPos = 0
     private var rng = MT19937(seed: 42)
 
-    public init(dataset: InputData, config: MsplatConfig = MsplatConfig()) throws {
+    public init(dataset: SplatInputData, config: MsplatConfig = MsplatConfig()) throws {
         _ = try MetalContext.shared()
         self.config = config
         self.dataset = dataset
@@ -312,7 +312,7 @@ public final class SplatTrainer {
     }
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
-    private func poseCamera(_ camToWorld: [Float], _ refCameraIndex: Int) -> RuntimeCamera? {
+    private func poseCamera(_ camToWorld: [Float], _ refCameraIndex: Int) throws -> RuntimeCamera? {
         precondition(camToWorld.count == 16, "camToWorld must have 16 elements")
         guard dataset.cameras.indices.contains(refCameraIndex) else { return nil }
         let refCam = dataset.cameras[refCameraIndex]
@@ -322,7 +322,7 @@ public final class SplatTrainer {
         newMeta.camToWorld = camToWorld
         
         // Create runtime camera with new meta
-        let cam = RuntimeCamera(meta: newMeta)
+        let cam = try RuntimeCamera(meta: newMeta)
         // Share image pyramids and GPU cache from reference camera
         cam.imagePyramids = refCam.imagePyramids
         cam.gpuImageCache = refCam.gpuImageCache
@@ -333,8 +333,8 @@ public final class SplatTrainer {
 
     /// Render from an arbitrary camera-to-world pose (4x4 row-major, OpenGL convention),
     /// using the intrinsics of a reference training camera.
-    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0) -> SplatImage? {
-        guard let cam = poseCamera(camToWorld, refCameraIndex) else { return nil }
+    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0) throws -> SplatImage? {
+        guard let cam = try poseCamera(camToWorld, refCameraIndex) else { return nil }
         return renderToImage(cam)
     }
 
@@ -342,8 +342,8 @@ public final class SplatTrainer {
     /// Pass nil to just query the output size. Returns (0, 0) for a bad camera index.
     @discardableResult
     public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0,
-                               into rgba: UnsafeMutablePointer<UInt8>?) -> (width: Int, height: Int) {
-        guard let cam = poseCamera(camToWorld, refCameraIndex) else { return (0, 0) }
+                               into rgba: UnsafeMutablePointer<UInt8>?) throws -> (width: Int, height: Int) {
+        guard let cam = try poseCamera(camToWorld, refCameraIndex) else { return (0, 0) }
         let rgb = model.render(cam, step: currentStep)
         msplatGpuSync()
         let h = rgb.size(0), w = rgb.size(1)

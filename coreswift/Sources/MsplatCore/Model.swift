@@ -4,6 +4,7 @@
 
 import Foundation
 
+
 private let C0 = 0.28209479177387814
 private let BLOCK_X = 16
 private let BLOCK_Y = 16
@@ -74,7 +75,7 @@ final class Model {
     var scale: Float
     var translation: (Float, Float, Float)
 
-    init(inputData: InputData, numCameras: Int, numDownscales: Int, resolutionSchedule: Int,
+    init(inputData: SplatInputData, numCameras: Int, numDownscales: Int, resolutionSchedule: Int,
          shDegree: Int, shDegreeInterval: Int, refineEvery: Int, warmupLength: Int,
          resetAlphaEvery: Int, densifyGradThresh: Float, densifySizeThresh: Float,
          stopScreenSizeAt: Int, splitScreenSize: Float, maxSteps: Int, keepCrs: Bool,
@@ -466,17 +467,17 @@ final class Model {
         var camPos: (Float, Float, Float)
     }
 
-    func prepareCam(_ cam: Camera, step: Int) -> CamSetup {
+    func prepareCam(_ cam: RuntimeCamera, step: Int) -> CamSetup {
         let sf = Float(getDownscaleFactor(step))
-        let fx = cam.fx / sf, fy = cam.fy / sf, cx = cam.cx / sf, cy = cam.cy / sf
-        let height = Int(Float(cam.height) / sf)
-        let width = Int(Float(cam.width) / sf)
+        let fx = cam.meta.fx / sf, fy = cam.meta.fy / sf, cx = cam.meta.cx / sf, cy = cam.meta.cy / sf
+        let height = Int(Float(cam.meta.height) / sf)
+        let width = Int(Float(cam.meta.width) / sf)
 
         let fovX = 2.0 * atanf(Float(width) / (2.0 * fx))
         let fovY = 2.0 * atanf(Float(height) / (2.0 * fy))
 
         if !cam.cachedViewMat.defined || cam.cachedFovX != fovX || cam.cachedFovY != fovY {
-            let d = cam.camToWorld
+            let d = cam.meta.camToWorld
             var R = [[Float]](repeating: [0, 0, 0], count: 3)
             var T: [Float] = [0, 0, 0]
             for i in 0..<3 {
@@ -520,7 +521,7 @@ final class Model {
             camPos: cam.cachedCamPos)
     }
 
-    private func renderParams(_ cam: Camera, _ s: CamSetup) -> RenderParams {
+    private func renderParams(_ cam: RuntimeCamera, _ s: CamSetup) -> RenderParams {
         RenderParams(
             numPoints: means.size(0), means3d: means, scales: scales, globScale: 1.0,
             quats: quats, viewmat: cam.cachedViewMat, projmat: cam.cachedProjViewMat,
@@ -532,12 +533,12 @@ final class Model {
             opacities: opacities, background: backgroundColor)
     }
 
-    func render(_ cam: Camera, step: Int) -> MTensor {
+    func render(_ cam: RuntimeCamera, step: Int) -> MTensor {
         let s = prepareCam(cam, step: step)
         return msplatRender(renderParams(cam, s))
     }
 
-    func fullIteration(_ cam: Camera, step: Int, gt: MTensor, ssimWeight: Float) {
+    func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) {
         let s = prepareCam(cam, step: step)
         lastHeight = s.height; lastWidth = s.width
         let numPoints = means.size(0)

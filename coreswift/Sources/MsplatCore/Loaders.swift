@@ -1,7 +1,5 @@
-// Port of loaders/load_colmap.cpp, load_nerfstudio.cpp, load_polycam.cpp and
-// load_ply.cpp (point-cloud reader). nlohmann/json is replaced by JSONSerialization.
-
 import Foundation
+
 
 // MARK: - Helpers
 
@@ -195,13 +193,13 @@ func loadColmap(_ projectRoot: String, imageSourcePath: String = "") throws -> I
     data.cameras.reserveCapacity(images.count)
     for img in images {
         guard let cc = cameras[img.camId] else { continue }
-        let cam = Camera()
-        cam.width = cc.width; cam.height = cc.height
-        cam.fx = cc.fx; cam.fy = cc.fy; cam.cx = cc.cx; cam.cy = cc.cy
-        cam.k1 = cc.k1; cam.k2 = cc.k2; cam.p1 = cc.p1; cam.p2 = cc.p2
-        cam.filePath = imageDir + "/" + img.filename
-        cam.camToWorld = w2cToCamToWorld(img.quat, img.t)
-        data.cameras.append(cam)
+        let filePath = imageDir + "/" + img.filename
+        var meta = CameraMeta(imageSource: .url(URL(fileURLWithPath: filePath)))
+        meta.width = cc.width; meta.height = cc.height
+        meta.fx = cc.fx; meta.fy = cc.fy; meta.cx = cc.cx; meta.cy = cc.cy
+        meta.k1 = cc.k1; meta.k2 = cc.k2; meta.p1 = cc.p1; meta.p2 = cc.p2
+        meta.camToWorld = w2cToCamToWorld(img.quat, img.t)
+        data.cameras.append(meta)
     }
 
     let ptsPath = sparseDir + "/points3D.bin"
@@ -238,36 +236,37 @@ func loadNerfstudio(_ projectRoot: String) throws -> InputData {
 
     let data = InputData()
     for frame in (j["frames"] as? [[String: Any]]) ?? [] {
-        let cam = Camera()
-        cam.width = num(frame, "w", gW); cam.height = num(frame, "h", gH)
-        cam.fx = num(frame, "fl_x", gFx); cam.fy = num(frame, "fl_y", gFy)
-        cam.cx = num(frame, "cx", gCx); cam.cy = num(frame, "cy", gCy)
-        cam.k1 = num(frame, "k1", gK1); cam.k2 = num(frame, "k2", gK2)
-        cam.k3 = num(frame, "k3", gK3)
-        cam.p1 = num(frame, "p1", gP1); cam.p2 = num(frame, "p2", gP2)
-
         guard let fp = frame["file_path"] as? String, !fp.isEmpty else {
             throw MsplatError("transforms.json: frame missing file_path")
         }
+        
+        let filePath: String
         if fp.hasPrefix("/") {
-            cam.filePath = resolveImagePath(fp)
+            filePath = resolveImagePath(fp)
         } else if fp.hasPrefix(".") {
             // C++ resolves "./x" against the process CWD. Keep that, but fall back to
             // the project root so "./images/..." works from any working directory.
             let cwdPath = resolveImagePath(fp)
-            cam.filePath = fileExists(cwdPath) ? cwdPath : resolveImagePath(joinPath(projectRoot, fp))
+            filePath = fileExists(cwdPath) ? cwdPath : resolveImagePath(joinPath(projectRoot, fp))
         } else {
-            cam.filePath = resolveImagePath(joinPath(projectRoot, fp))
+            filePath = resolveImagePath(joinPath(projectRoot, fp))
         }
+        
+        var meta = CameraMeta(imageSource: .url(URL(fileURLWithPath: filePath)))
+        meta.width = num(frame, "w", gW); meta.height = num(frame, "h", gH)
+        meta.fx = num(frame, "fl_x", gFx); meta.fy = num(frame, "fl_y", gFy)
+        meta.cx = num(frame, "cx", gCx); meta.cy = num(frame, "cy", gCy)
+        meta.k1 = num(frame, "k1", gK1); meta.k2 = num(frame, "k2", gK2)
+        meta.k3 = num(frame, "k3", gK3)
+        meta.p1 = num(frame, "p1", gP1); meta.p2 = num(frame, "p2", gP2)
 
         guard let m = readMatrix4(frame["transform_matrix"]) else {
             throw MsplatError("transforms.json: frame missing transform_matrix")
         }
-        cam.camToWorld = m
-        data.cameras.append(cam)
+        meta.camToWorld = m
+        
+        data.cameras.append(meta)
     }
-
-    data.cameras.sort { byteLess($0.filePath, $1.filePath) }
 
     if var p = j["ply_file_path"] as? String {
         if !p.hasPrefix("/") { p = joinPath(projectRoot, p) }
@@ -294,12 +293,14 @@ private func findImage(_ dir: String, _ stem: String) -> String {
     return joinPath(dir, stem + ".png")
 }
 
-private func polycamIntrinsics(_ cam: Camera, _ j: [String: Any]) {
-    cam.width = num(j, "width", 0)
-    cam.height = num(j, "height", 0)
-    cam.fx = num(j, "fx", Float(0)); cam.fy = num(j, "fy", Float(0))
-    cam.cx = num(j, "cx", Float(cam.width) / 2.0)
-    cam.cy = num(j, "cy", Float(cam.height) / 2.0)
+private func polycamIntrinsics(_ j: [String: Any]) -> CameraMeta {
+    var meta = CameraMeta(imageSource: .url(URL(fileURLWithPath: ""))) // Placeholder, will be set later
+    meta.width = num(j, "width", 0)
+    meta.height = num(j, "height", 0)
+    meta.fx = num(j, "fx", Float(0)); meta.fy = num(j, "fy", Float(0))
+    meta.cx = num(j, "cx", Float(meta.width) / 2.0)
+    meta.cy = num(j, "cy", Float(meta.height) / 2.0)
+    return meta
 }
 
 func loadPolycam(_ projectRoot: String) throws -> InputData {
@@ -316,23 +317,23 @@ func loadPolycam(_ projectRoot: String) throws -> InputData {
 
         for jp in files {
             guard let j = try loadJSON(jp) as? [String: Any] else { continue }
-            let cam = Camera()
-            polycamIntrinsics(cam, j)
+            var meta = polycamIntrinsics(j)
 
             var R = [Float](repeating: 0, count: 9)
             for r in 0..<3 { for c in 0..<3 { R[r * 3 + c] = num(j, "R_\(r)\(c)", Float(0)) } }
             let T: [Float] = [num(j, "t_20", Float(0)), num(j, "t_21", Float(0)), num(j, "t_22", Float(0))]
 
             // c2w with OpenGL Y/Z flip
-            cam.camToWorld = [
+            meta.camToWorld = [
                  R[0],  R[1],  R[2],  T[0],
                 -R[3], -R[4], -R[5], -T[1],
                 -R[6], -R[7], -R[8], -T[2],
                  0,     0,     0,     1,
             ]
             let stem = ((jp as NSString).lastPathComponent as NSString).deletingPathExtension
-            cam.filePath = findImage(imagesDir, stem)
-            data.cameras.append(cam)
+            let filePath = findImage(imagesDir, stem)
+            meta.imageSource = .url(URL(fileURLWithPath: filePath))
+            data.cameras.append(meta)
         }
     } else {
         // Layout 2: single cameras.json
@@ -346,14 +347,14 @@ func loadPolycam(_ projectRoot: String) throws -> InputData {
             frames = []
         }
         for frame in frames {
-            let cam = Camera()
-            polycamIntrinsics(cam, frame)
-            if let m = readMatrix4(frame["transform_matrix"]) { cam.camToWorld = m }
-            cam.filePath = (frame["file_path"] as? String) ?? ""
-            if !cam.filePath.isEmpty && !cam.filePath.hasPrefix("/") {
-                cam.filePath = joinPath(projectRoot, cam.filePath)
+            var meta = polycamIntrinsics(frame)
+            if let m = readMatrix4(frame["transform_matrix"]) { meta.camToWorld = m }
+            var filePath = (frame["file_path"] as? String) ?? ""
+            if !filePath.isEmpty && !filePath.hasPrefix("/") {
+                filePath = joinPath(projectRoot, filePath)
             }
-            data.cameras.append(cam)
+            meta.imageSource = .url(URL(fileURLWithPath: filePath))
+            data.cameras.append(meta)
         }
     }
 

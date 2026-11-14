@@ -171,12 +171,16 @@ final class Engine: ObservableObject {
             guard let self else { return }
             
             // Load dataset using new API
-            let dataset: InputData
+            let splatDataset: SplatInputData
             do {
                 let url = URL(fileURLWithPath: datasetPath)
-                dataset = try await SplatDatasetLoader.load(from: url)
-                try dataset.downscaleCameraImages(factor: 1.0)
-            } catch {
+                // First load metadata-only InputData
+                let inputData = try await SplatDatasetLoader.load(from: url)
+                // Then create SplatInputData with loaded images (downscaled if needed)
+                splatDataset = try SplatInputData(from: inputData, downscaleFactor: 1.0)
+            } 
+			catch 
+			{
                 print("Failed to load dataset: \(error)")
                 return
             }
@@ -188,7 +192,7 @@ final class Engine: ObservableObject {
             
             let trainer: SplatTrainer
             do {
-                trainer = try SplatTrainer(dataset: dataset, config: config)
+                trainer = try SplatTrainer(dataset: splatDataset, config: config)
             } catch {
                 print("Failed to create trainer: \(error)")
                 return
@@ -232,7 +236,7 @@ final class Engine: ObservableObject {
             }
 
             // Phase 2: Smooth circular orbit with zero-copy render
-            let poses = dataset.cameras.map { $0.meta.camToWorld }
+            let poses = splatDataset.cameras.map { $0.meta.camToWorld }
             let orbit = computeOrbitParams(poses)
             var frameCount = 0
             var fpsTimer = CACurrentMediaTime()
@@ -240,7 +244,7 @@ final class Engine: ObservableObject {
             // Query dimensions once to pre-allocate RGBA buffer
             var imgW: Int = 0, imgH: Int = 0
             let firstPose = lookAtCamToWorld(eye: orbit.eyeCenter, target: orbit.lookAt, up: orbit.up)
-            (imgW, imgH) = trainer.renderFromPose(camToWorld: firstPose, refCameraIndex: 0, into: nil)
+            (imgW, imgH) = try trainer.renderFromPose(camToWorld: firstPose, refCameraIndex: 0, into: nil)
             let rgbaBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: imgW * imgH * 4)
             for i in 0..<(imgW * imgH) { rgbaBuf[i * 4 + 3] = 255 }
 
@@ -262,7 +266,7 @@ final class Engine: ObservableObject {
                 )
 
                 let pose = lookAtCamToWorld(eye: eye, target: orbit.lookAt, up: orbit.up)
-                (imgW, imgH) = trainer.renderFromPose(camToWorld: pose, refCameraIndex: 0, into: rgbaBuf)
+                (imgW, imgH) = try trainer.renderFromPose(camToWorld: pose, refCameraIndex: 0, into: rgbaBuf)
                 frameCount += 1
 
                 var currentFps: Float = 0
