@@ -96,7 +96,8 @@ public struct NerfstudioDatasetSource
 {
 	private let url: URL
 	
-	public init(url: URL) {
+	public init(url: URL)
+	{
 		self.url = url
 	}
 	
@@ -190,7 +191,8 @@ public struct NerfstudioDatasetSource
 			let plyURL = baseURL.appendingPathComponent(plyPath)
 			if FileManager.default.fileExists(atPath: plyURL.path) {
 				// TODO: Implement PLY loading
-				// throw NerfStudioError("Ply loading not implemented")
+				throw NerfStudioError("Ply loading not implemented")
+				//readPly()
 			}
 		}
 		
@@ -202,4 +204,5 @@ public struct NerfstudioDatasetSource
 		)
 	}
 }
+
 

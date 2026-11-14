@@ -1,17 +1,10 @@
-// Port of msplat_api.hpp / msplat_api.mm — the public, Swift-native API.
-//
-//   let dataset = try await SplatDatasetLoader.load(from: URL(fileURLWithPath: "..."))
-//   try dataset.downscaleCameraImages(factor: 2.0)
-//   let trainer = try SplatTrainer(dataset: dataset, config: MsplatConfig())
-//   while trainer.iteration < 30_000 { let s = trainer.step() }
-//   try trainer.exportPly(to: "scene.ply")
-//
-// Not thread-safe (same contract as the C++): drive one trainer from one thread.
-
 import Foundation
 import NerfStudioData
+import ColmapData
+import PolycamData
 
-// MARK: - Value types (field names/types match msplat_c_api.h)
+
+
 
 public struct MsplatConfig {
     public var iterations: Int32 = 30_000
@@ -82,153 +75,8 @@ public protocol SplatDatasetSource
 {
 	static func Detect(rootPath:URL) -> Bool
 	
-	func load() async throws -> InputData
+	func Load() async throws -> InputData
 }
-
-// MARK: - NerfStudio Dataset Source Adapter
-
-/// Adapter to convert NerfStudioData package types to MsplatCore InputData
-extension NerfstudioDatasetSource: SplatDatasetSource {
-    public static func Detect(rootPath: URL) -> Bool {
-        let fm = FileManager.default
-        let transformsPath = rootPath.appendingPathComponent("transforms.json").path
-        return fm.fileExists(atPath: transformsPath)
-    }
-    
-    public func load() async throws -> InputData {
-        // Load the dataset using the NerfStudioData package
-        let nerfDataset = try await loadDataset()
-        
-        // Convert to InputData
-        return try convertToInputData(nerfDataset)
-    }
-    
-    /// Convert NerfStudioDataset to MsplatCore's InputData format
-    private func convertToInputData(_ nerfDataset: NerfStudioDataset) throws -> InputData {
-        let inputData = InputData()
-        
-        // Convert cameras
-        for nerfCamera in nerfDataset.cameras {
-            var cameraMeta = CameraMeta(imageSource: .url(
-                nerfDataset.baseDirectory.appendingPathComponent(nerfCamera.imagePath)
-            ))
-            
-            cameraMeta.width = nerfCamera.width
-            cameraMeta.height = nerfCamera.height
-            cameraMeta.fx = nerfCamera.fx
-            cameraMeta.fy = nerfCamera.fy
-            cameraMeta.cx = nerfCamera.cx
-            cameraMeta.cy = nerfCamera.cy
-            
-            // Map distortion parameters (NerfStudio uses k1-k4, p1-p2; we use k1-k3, p1-p2)
-            cameraMeta.k1 = nerfCamera.k1
-            cameraMeta.k2 = nerfCamera.k2
-            cameraMeta.k3 = nerfCamera.k3  // k4 is ignored - not supported by our distortion model
-            cameraMeta.p1 = nerfCamera.p1
-            cameraMeta.p2 = nerfCamera.p2
-            
-            // Copy transform matrix (already in OpenGL convention)
-            cameraMeta.camToWorld = nerfCamera.transformMatrix
-            
-            inputData.cameras.append(cameraMeta)
-        }
-        
-        // Convert point cloud if present
-        if let pointCloud = nerfDataset.pointCloud {
-            inputData.points.xyz = pointCloud.positions
-            inputData.points.rgb = pointCloud.colors
-            inputData.points.count = pointCloud.count
-        }
-        
-        // Apply scale from the dataset
-        inputData.scale = nerfDataset.appliedScale
-        
-        return inputData
-    }
-}
-
-/// COLMAP dataset source (cameras.bin format)
-public final class ColmapDatasetSource: SplatDatasetSource {
-    private let url: URL
-    private let imageSourcePath: String
-    
-    public init(url: URL, imageSourcePath: String = "") {
-        self.url = url
-        self.imageSourcePath = imageSourcePath
-    }
-    
-    public static func Detect(rootPath: URL) -> Bool {
-        let fm = FileManager.default
-        
-        // Check for cameras.bin in root directory
-        let camerasInRoot = rootPath.appendingPathComponent("cameras.bin").path
-        if fm.fileExists(atPath: camerasInRoot) {
-            return true
-        }
-        
-        // Check for cameras.bin in sparse/0 directory (common COLMAP structure)
-        let camerasInSparse = rootPath
-            .appendingPathComponent("sparse")
-            .appendingPathComponent("0")
-            .appendingPathComponent("cameras.bin")
-            .path
-        return fm.fileExists(atPath: camerasInSparse)
-    }
-    
-    /// Load InputData from a COLMAP dataset (cameras.bin format)
-    /// - Parameters:
-    ///   - path: Path to the dataset directory
-    ///   - imageSourcePath: Optional custom path to images directory
-    /// - Returns: Loaded InputData with cameras and optional point cloud
-    static func loadInputData(from path: String, imageSourcePath: String = "") throws -> InputData {
-        return try loadColmap(path, imageSourcePath: imageSourcePath)
-    }
-    
-    public func load() async throws -> InputData {
-        let input = try Self.loadInputData(from: url.path, imageSourcePath: imageSourcePath)
-        return input
-    }
-}
-
-/// Polycam dataset source (keyframes/corrected_cameras or cameras.json format)
-public final class PolycamDatasetSource: SplatDatasetSource {
-    private let url: URL
-    
-    public init(url: URL) {
-        self.url = url
-    }
-    
-    public static func Detect(rootPath: URL) -> Bool {
-        let fm = FileManager.default
-        
-        // Check for keyframes/corrected_cameras
-        let correctedCameras = rootPath
-            .appendingPathComponent("keyframes")
-            .appendingPathComponent("corrected_cameras")
-            .path
-        if fm.fileExists(atPath: correctedCameras) {
-            return true
-        }
-        
-        // Check for cameras.json
-        let camerasJson = rootPath.appendingPathComponent("cameras.json").path
-        return fm.fileExists(atPath: camerasJson)
-    }
-    
-    /// Load InputData from a Polycam dataset (keyframes/corrected_cameras or cameras.json format)
-    /// - Parameter path: Path to the dataset directory
-    /// - Returns: Loaded InputData with cameras and optional point cloud
-    static func loadInputData(from path: String) throws -> InputData {
-        return try loadPolycam(path)
-    }
-    
-    public func load() async throws -> InputData {
-        let input = try Self.loadInputData(from: url.path)
-        return input
-    }
-}
-
-// MARK: - Dataset Loader Factory
 
 /// Factory for creating the appropriate dataset source based on the dataset format
 public enum SplatDatasetLoader {
@@ -255,8 +103,9 @@ public enum SplatDatasetLoader {
     /// - Returns: A SplatDatasetSource ready to load the dataset
     public static func createSource(
         from url: URL,
-        colmapImagePath: String = ""
-    ) throws -> SplatDatasetSource {
+        colmapImagePath:URL?
+    ) throws -> SplatDatasetSource 
+	{
         let fm = FileManager.default
         
         guard fm.fileExists(atPath: url.path) else {
@@ -264,15 +113,19 @@ public enum SplatDatasetLoader {
         }
         
         // Try each dataset source using their Detect methods
-        if NerfstudioDatasetSource.Detect(rootPath: url) {
-            return NerfstudioDatasetSource(url: url)
+        if NerfstudioDatasetSource.Detect(rootPath: url) 
+		{
+			let nerf = NerfstudioDatasetSource(url: url)
+            return nerf
         }
         
-        if ColmapDatasetSource.Detect(rootPath: url) {
+        if ColmapDatasetSource.Detect(rootPath: url) 
+		{
             return ColmapDatasetSource(url: url, imageSourcePath: colmapImagePath)
         }
         
-        if PolycamDatasetSource.Detect(rootPath: url) {
+		if PolycamDatasetSource.Detect(rootPath: url)
+		{
             return PolycamDatasetSource(url: url)
         }
         
@@ -282,10 +135,10 @@ public enum SplatDatasetLoader {
     /// Convenience method to auto-detect format and load the dataset in one step
     public static func load(
         from url: URL,
-        colmapImagePath: String = ""
+        colmapImagePath:URL?
     ) async throws -> InputData {
         let source = try createSource(from: url, colmapImagePath: colmapImagePath)
-        return try await source.load()
+        return try await source.Load()
     }
 }
 

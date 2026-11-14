@@ -1,6 +1,5 @@
-// Port of loaders/save_gaussians.cpp: trained-scene PLY / .splat export and PLY import.
-
 import Foundation
+import NerfStudioData	//	plyHeader
 
 private let C0 = 0.28209479177387814
 
@@ -66,6 +65,13 @@ func saveGaussianPly(_ path: String, _ p: GaussianParams, step: Int) throws {
     var data = Data(header.utf8)
     body.withUnsafeBytes { data.append(contentsOf: $0) }  // little-endian host
     try writeData(data, to: path)
+}
+
+
+@inline(__always)
+func clampToUInt8(_ v: Float) -> UInt8 {
+	if v.isNaN { return 0 }
+	return UInt8(min(max(v, 0), 255))
 }
 
 func saveGaussianSplat(_ path: String, _ p: GaussianParams) throws {

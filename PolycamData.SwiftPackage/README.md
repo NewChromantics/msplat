@@ -1,0 +1,1 @@
+Swift Code to load Colmap Data.

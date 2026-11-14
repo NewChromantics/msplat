@@ -164,10 +164,13 @@ final class Engine: ObservableObject {
         }
     }
 
-    private func beginTraining(datasetPath: String) {
+    private func beginTraining(datasetPath: String) 
+	{
         let totalIterations = Int32(self.totalIterations)
         
-        Task.detached { [weak self] in
+        Task.detached 
+		{ 
+			[weak self] in
             guard let self else { return }
             
             // Load dataset using new API
@@ -175,7 +178,7 @@ final class Engine: ObservableObject {
             do {
                 let url = URL(fileURLWithPath: datasetPath)
                 // First load metadata-only InputData
-                let inputData = try await SplatDatasetLoader.load(from: url)
+				let inputData = try await SplatDatasetLoader.load(from: url, colmapImagePath: nil)
                 // Then create SplatInputData with loaded images (downscaled if needed)
                 splatDataset = try SplatInputData(from: inputData, downscaleFactor: 1.0)
             } 
