@@ -6,13 +6,13 @@ let package = Package(
     name: "DemoApp",
     platforms: [.macOS(.v15)],
     dependencies: [
-        .package(path: "../swift"),
+        .package(path: "../coreswift"),
     ],
     targets: [
         .executableTarget(
             name: "DemoApp",
 			dependencies: [
-				.product(name: "Msplat", package: "swift"),
+				.product(name: "MsplatCore", package: "coreswift"),
 			], 
 			path: "Sources",
 			resources:[.copy("../../datasets/")]

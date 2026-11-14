@@ -6,7 +6,7 @@ import Foundation
 /// A camera view. Reference type because it owns lazily-built caches (image pyramid,
 /// GPU images, view matrices) that are filled in during training. The C++ copies
 /// Camera by value in a few places; `copy()` provides that where it matters.
-final class Camera {
+public final class Camera {
     var width = 0, height = 0
     var fx: Float = 0, fy: Float = 0, cx: Float = 0, cy: Float = 0
     var k1: Float = 0, k2: Float = 0, k3: Float = 0, p1: Float = 0, p2: Float = 0
@@ -101,11 +101,28 @@ struct Points {
     var count = 0
 }
 
-final class InputData {
-    var cameras: [Camera] = []
+public final class InputData {
+    public var cameras: [Camera] = []
     var scale: Float = 1.0
     var translation: (Float, Float, Float) = (0, 0, 0)
     var points = Points()
+    
+    /// Downscale all camera images by the given factor
+    /// - Parameter factor: Downscale factor (e.g., 2.0 means half the resolution)
+    public func downscaleCameraImages(factor: Float) throws {
+        guard factor > 0 else { return }
+        for cam in cameras {
+            try cam.loadImage(downscaleFactor: factor)
+        }
+    }
+    
+    /// Number of cameras in the dataset
+    public var numCameras: Int { cameras.count }
+    
+    /// Camera-to-world pose (4x4 row-major, OpenGL) of a camera, or nil.
+    public func cameraPose(at index: Int) -> [Float]? {
+        cameras.indices.contains(index) ? cameras[index].camToWorld : nil
+    }
 
     /// Returns (train cameras, optional validation camera).
     func getCameras(validate: Bool, valImage: String = "random") -> ([Camera], Camera?) {
@@ -123,15 +140,6 @@ final class InputData {
         var train: [Camera] = []
         for (i, c) in cameras.enumerated() where i != valIdx { train.append(c.copy()) }
         return (train, cameras[valIdx])
-    }
-
-    /// Every `testEvery`-th camera (starting at 0) goes to test.
-    func splitTrainTest(testEvery: Int) -> (train: [Camera], test: [Camera]) {
-        var train: [Camera] = [], test: [Camera] = []
-        for (i, c) in cameras.enumerated() {
-            if i % testEvery == 0 { test.append(c.copy()) } else { train.append(c.copy()) }
-        }
-        return (train, test)
     }
 
     func saveCameras(to filename: String, keepCrs: Bool) throws {
@@ -200,27 +208,4 @@ func autoScaleAndCenter(_ data: InputData) {
         data.points.xyz[i * 3 + 1] = (data.points.xyz[i * 3 + 1] - mean.1) * s
         data.points.xyz[i * 3 + 2] = (data.points.xyz[i * 3 + 2] - mean.2) * s
     }
-}
-
-// MARK: - Format dispatcher
-
-/// Auto-detect format (Nerfstudio, COLMAP, Polycam) and load.
-func inputDataFromX(_ path: String, colmapImagePath: String = "") throws -> InputData {
-    let fm = FileManager.default
-    let root = URL(fileURLWithPath: path)
-    func exists(_ parts: String...) -> Bool {
-        fm.fileExists(atPath: parts.reduce(root) { $0.appendingPathComponent($1) }.path)
-    }
-
-    guard fm.fileExists(atPath: path) else { throw MsplatError("Path does not exist; \(path)") }
-
-    if exists("transforms.json") { return try loadNerfstudio(path) }
-    if exists("cameras.bin") || exists("sparse", "0", "cameras.bin") {
-        return try loadColmap(path, imageSourcePath: colmapImagePath)
-    }
-    if exists("keyframes", "corrected_cameras") || exists("cameras.json") {
-        return try loadPolycam(path)
-    }
-    throw MsplatError("Unrecognized dataset format in: \(path)\n"
-        + "Supported: COLMAP (cameras.bin), Nerfstudio (transforms.json), Polycam (keyframes/)")
 }

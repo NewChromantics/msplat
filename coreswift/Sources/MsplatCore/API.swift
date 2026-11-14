@@ -1,7 +1,8 @@
 // Port of msplat_api.hpp / msplat_api.mm — the public, Swift-native API.
 //
-//   let ds = try SplatDataset(path: "...", downscaleFactor: 1, evalMode: true, testEvery: 8)
-//   let trainer = try SplatTrainer(dataset: ds, config: MsplatConfig())
+//   let dataset = try await SplatDatasetLoader.load(from: URL(fileURLWithPath: "..."))
+//   try dataset.downscaleCameraImages(factor: 2.0)
+//   let trainer = try SplatTrainer(dataset: dataset, config: MsplatConfig())
 //   while trainer.iteration < 30_000 { let s = trainer.step() }
 //   try trainer.exportPly(to: "scene.ply")
 //
@@ -26,7 +27,6 @@ public struct MsplatConfig {
     public var stopScreenSizeAt: Int32 = 4_000
     public var splitScreenSize: Float = 0.05
     public var keepCrs: Bool = false
-    public var downscaleFactor: Float = 1.0
     /// Default magenta — high contrast, makes under-reconstructed regions obvious.
     public var bgColor: (Float, Float, Float) = (0.6130, 0.0101, 0.3984)
 
@@ -74,35 +74,147 @@ public enum MsplatRuntime {
     public static func drainStageTimes() -> [(name: String, timesMs: [Double])] { msplatDrainStageTimes() }
 }
 
-// MARK: - Dataset
 
-public final class SplatDataset {
-    let data: InputData
-    let trainCams: [Camera]
-    let testCams: [Camera]
 
-    public init(path: String, downscaleFactor: Float = 1.0, evalMode: Bool = false,
-                testEvery: Int = 8) throws {
-        let input = try inputDataFromX(path)
-        for cam in input.cameras { try cam.loadImage(downscaleFactor: downscaleFactor) }
-        if evalMode {
-            precondition(testEvery > 0, "testEvery must be > 0")
-            let split = input.splitTrainTest(testEvery: testEvery)
-            trainCams = split.train
-            testCams = split.test
-        } else {
-            trainCams = input.getCameras(validate: false).0
-            testCams = []
-        }
-        data = input
+/// Protocol for all dataset source types (Nerfstudio, COLMAP, Polycam, etc.)
+public protocol SplatDatasetSource {
+    /// Load the dataset from its source
+    func load() async throws -> InputData
+}
+
+// MARK: - Dataset Source Implementations
+
+/// Nerfstudio dataset source (transforms.json format)
+public final class NerfstudioDatasetSource: SplatDatasetSource {
+    private let url: URL
+    
+    public init(url: URL) {
+        self.url = url
     }
+    
+    /// Load InputData from a Nerfstudio dataset (transforms.json format)
+    /// - Parameter path: Path to the dataset directory
+    /// - Returns: Loaded InputData with cameras and optional point cloud
+    static func loadInputData(from path: String) throws -> InputData {
+        return try loadNerfstudio(path)
+    }
+    
+    public func load() async throws -> InputData {
+        let input = try Self.loadInputData(from: url.path)
+        return input
+    }
+}
 
-    public var numTrain: Int { trainCams.count }
-    public var numTest: Int { testCams.count }
+/// COLMAP dataset source (cameras.bin format)
+public final class ColmapDatasetSource: SplatDatasetSource {
+    private let url: URL
+    private let imageSourcePath: String
+    
+    public init(url: URL, imageSourcePath: String = "") {
+        self.url = url
+        self.imageSourcePath = imageSourcePath
+    }
+    
+    /// Load InputData from a COLMAP dataset (cameras.bin format)
+    /// - Parameters:
+    ///   - path: Path to the dataset directory
+    ///   - imageSourcePath: Optional custom path to images directory
+    /// - Returns: Loaded InputData with cameras and optional point cloud
+    static func loadInputData(from path: String, imageSourcePath: String = "") throws -> InputData {
+        return try loadColmap(path, imageSourcePath: imageSourcePath)
+    }
+    
+    public func load() async throws -> InputData {
+        let input = try Self.loadInputData(from: url.path, imageSourcePath: imageSourcePath)
+        return input
+    }
+}
 
-    /// Camera-to-world pose (4x4 row-major, OpenGL) of a training camera, or nil.
-    public func cameraPose(at index: Int) -> [Float]? {
-        trainCams.indices.contains(index) ? trainCams[index].camToWorld : nil
+/// Polycam dataset source (keyframes/corrected_cameras or cameras.json format)
+public final class PolycamDatasetSource: SplatDatasetSource {
+    private let url: URL
+    
+    public init(url: URL) {
+        self.url = url
+    }
+    
+    /// Load InputData from a Polycam dataset (keyframes/corrected_cameras or cameras.json format)
+    /// - Parameter path: Path to the dataset directory
+    /// - Returns: Loaded InputData with cameras and optional point cloud
+    static func loadInputData(from path: String) throws -> InputData {
+        return try loadPolycam(path)
+    }
+    
+    public func load() async throws -> InputData {
+        let input = try Self.loadInputData(from: url.path)
+        return input
+    }
+}
+
+// MARK: - Dataset Loader Factory
+
+/// Factory for creating the appropriate dataset source based on the dataset format
+public enum SplatDatasetLoader {
+    /// Errors thrown during dataset detection or loading
+    public enum LoaderError: Error, CustomStringConvertible {
+        case pathDoesNotExist(String)
+        case unrecognizedFormat(String)
+        
+        public var description: String {
+            switch self {
+            case .pathDoesNotExist(let path):
+                return "Path does not exist: \(path)"
+            case .unrecognizedFormat(let path):
+                return "Unrecognized dataset format in: \(path)\n" +
+                       "Supported: COLMAP (cameras.bin), Nerfstudio (transforms.json), Polycam (keyframes/)"
+            }
+        }
+    }
+    
+    /// Auto-detect the dataset format and create the appropriate source
+    /// - Parameters:
+    ///   - url: Path to the dataset directory
+    ///   - colmapImagePath: Optional custom image path for COLMAP datasets
+    /// - Returns: A SplatDatasetSource ready to load the dataset
+    public static func createSource(
+        from url: URL,
+        colmapImagePath: String = ""
+    ) throws -> SplatDatasetSource {
+        let fm = FileManager.default
+        
+        guard fm.fileExists(atPath: url.path) else {
+            throw LoaderError.pathDoesNotExist(url.path)
+        }
+        
+        func exists(_ parts: String...) -> Bool {
+            fm.fileExists(atPath: parts.reduce(url) { $0.appendingPathComponent($1) }.path)
+        }
+        
+        // Detect Nerfstudio format
+        if exists("transforms.json") {
+            return NerfstudioDatasetSource(url: url)
+        }
+        
+        // Detect COLMAP format
+        if exists("cameras.bin") || exists("sparse", "0", "cameras.bin") {
+            return ColmapDatasetSource(url: url, imageSourcePath: colmapImagePath)
+        }
+        
+        // Detect Polycam format
+        if exists("keyframes", "corrected_cameras") || exists("cameras.json") {
+            return PolycamDatasetSource(url: url)
+        }
+        
+        throw LoaderError.unrecognizedFormat(url.path)
+    }
+    
+    /// Convenience method to auto-detect format and load the dataset in one step
+    public static func load(
+        from url: URL,
+        colmapImagePath: String = ""
+    ) async throws -> InputData {
+        let source = try createSource(from: url, colmapImagePath: colmapImagePath)
+        return try await source.load()
     }
 }
 
@@ -111,19 +223,19 @@ public final class SplatDataset {
 public final class SplatTrainer {
     private let model: Model
     private let config: MsplatConfig
-    private let ds: SplatDataset   // retained: no dangling dataset as in the C++
+    private let dataset: InputData   // retained: no dangling dataset as in the C++
     private var currentStep = 0
 
     private var camIndices: [Int]
     private var camIterPos = 0
     private var rng = MT19937(seed: 42)
 
-    public init(dataset: SplatDataset, config: MsplatConfig = MsplatConfig()) throws {
+    public init(dataset: InputData, config: MsplatConfig = MsplatConfig()) throws {
         _ = try MetalContext.shared()
         self.config = config
-        ds = dataset
+        self.dataset = dataset
         model = Model(
-            inputData: dataset.data, numCameras: dataset.trainCams.count,
+            inputData: dataset, numCameras: dataset.cameras.count,
             numDownscales: Int(config.numDownscales), resolutionSchedule: Int(config.resolutionSchedule),
             shDegree: Int(config.shDegree), shDegreeInterval: Int(config.shDegreeInterval),
             refineEvery: Int(config.refineEvery), warmupLength: Int(config.warmupLength),
@@ -132,7 +244,7 @@ public final class SplatTrainer {
             stopScreenSizeAt: Int(config.stopScreenSizeAt), splitScreenSize: config.splitScreenSize,
             maxSteps: Int(config.iterations), keepCrs: config.keepCrs,
             bgColor: config.bgColor)
-        camIndices = Array(0..<dataset.trainCams.count)
+        camIndices = Array(0..<dataset.cameras.count)
         shuffleCameras()
     }
 
@@ -152,7 +264,7 @@ public final class SplatTrainer {
     @discardableResult
     public func step() -> MsplatStats {
         currentStep += 1
-        let cam = ds.trainCams[nextCamera()]
+        let cam = dataset.cameras[nextCamera()]
         let gt = cam.getGPUImage(downscaleFactor: model.getDownscaleFactor(currentStep))
 
         let t0 = DispatchTime.now().uptimeNanoseconds
@@ -181,27 +293,8 @@ public final class SplatTrainer {
 
     /// Evaluate on held-out test cameras.
     public func evaluate() -> MsplatEvalMetrics {
-        let cams = ds.testCams
-        guard !cams.isEmpty else { return MsplatEvalMetrics() }
-        var sumPsnr = 0.0, sumSsim = 0.0, sumL1 = 0.0
-        let iters = Int(config.iterations)
-        for cam in cams {
-            let rgb = model.render(cam, step: iters)
-            msplatGpuSync()
-            let rgbCpu = rgb.cpu()
-            let gtCpu = cam.getGPUImage(downscaleFactor: model.getDownscaleFactor(iters)).cpu()
-            sumPsnr += Double(psnr(rgbCpu, gtCpu))
-            sumSsim += Double(ssimEval(rgbCpu, gtCpu))
-            sumL1 += Double(l1Loss(rgbCpu, gtCpu))
-        }
-        let n = Double(cams.count)
-        var m = MsplatEvalMetrics()
-        m.psnr = Float(sumPsnr / n)
-        m.ssim = Float(sumSsim / n)
-        m.l1 = Float(sumL1 / n)
-        m.numTest = Int32(cams.count)
-        m.numGaussians = Int32(model.means.size(0))
-        return m
+        // No separate test cameras anymore - returns empty metrics
+        return MsplatEvalMetrics()
     }
 
     private func renderToImage(_ cam: Camera) -> SplatImage {
@@ -212,18 +305,17 @@ public final class SplatTrainer {
         return SplatImage(pixels: pixels, width: w, height: h)
     }
 
-    /// Render a train (or test) camera view. Nil if the index is out of range.
-    public func render(cameraIndex: Int, useTest: Bool = false) -> SplatImage? {
-        let cams = useTest ? ds.testCams : ds.trainCams
-        guard cams.indices.contains(cameraIndex) else { return nil }
-        return renderToImage(cams[cameraIndex])
+    /// Render a camera view. Nil if the index is out of range.
+    public func render(cameraIndex: Int) -> SplatImage? {
+        guard dataset.cameras.indices.contains(cameraIndex) else { return nil }
+        return renderToImage(dataset.cameras[cameraIndex])
     }
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
     private func poseCamera(_ camToWorld: [Float], _ refCameraIndex: Int) -> Camera? {
         precondition(camToWorld.count == 16, "camToWorld must have 16 elements")
-        guard ds.trainCams.indices.contains(refCameraIndex) else { return nil }
-        let cam = ds.trainCams[refCameraIndex].copy()
+        guard dataset.cameras.indices.contains(refCameraIndex) else { return nil }
+        let cam = dataset.cameras[refCameraIndex].copy()
         cam.camToWorld = camToWorld
         // Invalidate cached matrices so prepareCam recomputes from the new pose
         cam.cachedViewMat = MTensor()
