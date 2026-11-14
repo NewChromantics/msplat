@@ -297,7 +297,7 @@ public final class SplatTrainer {
         return MsplatEvalMetrics()
     }
 
-    private func renderToImage(_ cam: Camera) -> SplatImage {
+    private func renderToImage(_ cam: RuntimeCamera) -> SplatImage {
         let rgb = model.render(cam, step: currentStep)
         msplatGpuSync()
         let h = rgb.size(0), w = rgb.size(1)
@@ -312,14 +312,22 @@ public final class SplatTrainer {
     }
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
-    private func poseCamera(_ camToWorld: [Float], _ refCameraIndex: Int) -> Camera? {
+    private func poseCamera(_ camToWorld: [Float], _ refCameraIndex: Int) -> RuntimeCamera? {
         precondition(camToWorld.count == 16, "camToWorld must have 16 elements")
         guard dataset.cameras.indices.contains(refCameraIndex) else { return nil }
-        let cam = dataset.cameras[refCameraIndex].copy()
-        cam.camToWorld = camToWorld
-        // Invalidate cached matrices so prepareCam recomputes from the new pose
-        cam.cachedViewMat = MTensor()
-        cam.cachedProjViewMat = MTensor()
+        let refCam = dataset.cameras[refCameraIndex]
+        
+        // Create new meta with same intrinsics but different pose
+        var newMeta = refCam.meta
+        newMeta.camToWorld = camToWorld
+        
+        // Create runtime camera with new meta
+        let cam = RuntimeCamera(meta: newMeta)
+        // Share image pyramids and GPU cache from reference camera
+        cam.imagePyramids = refCam.imagePyramids
+        cam.gpuImageCache = refCam.gpuImageCache
+        // Leave cached matrices empty - they'll be recomputed from new pose
+        
         return cam
     }
 

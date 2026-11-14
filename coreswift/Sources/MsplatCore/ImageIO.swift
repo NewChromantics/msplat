@@ -8,10 +8,22 @@ import UniformTypeIdentifiers
 
 /// Float32 RGB image, HWC, values in [0, 1].
 public struct RGBImage {
-    var data: [Float] = []
-    var width = 0
-    var height = 0
-    var isEmpty: Bool { data.isEmpty }
+    var data: [Float]
+    var width: Int
+    var height: Int
+    
+    init(data: [Float], width: Int, height: Int) throws {
+        guard width > 0 && height > 0 else {
+            throw MsplatError("RGBImage dimensions must be positive: \(width)x\(height)")
+        }
+        let expectedSize = width * height * 3
+        guard data.count == expectedSize else {
+            throw MsplatError("RGBImage data size mismatch: expected \(expectedSize) (3×\(width)×\(height)), got \(data.count)")
+        }
+        self.data = data
+        self.width = width
+        self.height = height
+    }
 }
 
 func imreadRGB(_ path: String) throws -> RGBImage {
@@ -31,43 +43,20 @@ func imreadRGB(_ path: String) throws -> RGBImage {
                             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
     }
-    var img = RGBImage(data: [Float](repeating: 0, count: w * h * 3), width: w, height: h)
+    var pixels = [Float](repeating: 0, count: w * h * 3)
     for i in 0..<(w * h) {
-        img.data[i * 3 + 0] = Float(rgba[i * 4 + 0]) / 255.0
-        img.data[i * 3 + 1] = Float(rgba[i * 4 + 1]) / 255.0
-        img.data[i * 3 + 2] = Float(rgba[i * 4 + 2]) / 255.0
+        pixels[i * 3 + 0] = Float(rgba[i * 4 + 0]) / 255.0
+        pixels[i * 3 + 1] = Float(rgba[i * 4 + 1]) / 255.0
+        pixels[i * 3 + 2] = Float(rgba[i * 4 + 2]) / 255.0
     }
-    return img
+    return try RGBImage(data: pixels, width: w, height: h)
 }
 
-/// Save as PNG.
-func imwriteRGB(_ path: String, _ img: RGBImage) throws {
-    let w = img.width, h = img.height
-    // CoreGraphics bitmap contexts don't accept 24bpp RGB, so write RGBX.
-    var rgbx = [UInt8](repeating: 255, count: w * h * 4)
-    for i in 0..<(w * h) {
-        for c in 0..<3 {
-            let v = min(max(img.data[i * 3 + c] * 255.0, 0), 255)
-            rgbx[i * 4 + c] = UInt8(v + 0.5)
-        }
-    }
-    let cs = CGColorSpaceCreateDeviceRGB()
-    let cgImage: CGImage? = rgbx.withUnsafeMutableBytes { buf in
-        CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8,
-                  bytesPerRow: w * 4, space: cs,
-                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)?.makeImage()
-    }
-    guard let cgImage,
-          let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
-                                                     UTType.png.identifier as CFString, 1, nil)
-    else { throw MsplatError("Failed to write image: \(path)") }
-    CGImageDestinationAddImage(dest, cgImage, nil)
-    guard CGImageDestinationFinalize(dest) else { throw MsplatError("Failed to write image: \(path)") }
-}
 
 /// Area-based (box filter) resize.
 func resizeArea(_ src: RGBImage, _ dstW: Int, _ dstH: Int) -> RGBImage {
-    var dst = RGBImage(data: [Float](repeating: 0, count: dstW * dstH * 3), width: dstW, height: dstH)
+    let pixels = [Float](repeating: 0, count: dstW * dstH * 3)
+    var dst = try! RGBImage(data: pixels, width: dstW, height: dstH)
     let scaleX = Float(src.width) / Float(dstW)
     let scaleY = Float(src.height) / Float(dstH)
 
@@ -204,7 +193,8 @@ func undistortImage(_ src: RGBImage, fx: Float, fy: Float, cx: Float, cy: Float,
 
     // For each output pixel, forward-distort to find the source pixel. Only the ROI
     // is kept, so only the ROI is computed (same result as computing then cropping).
-    var cropped = RGBImage(data: [Float](repeating: 0, count: roiW * roiH * 3), width: roiW, height: roiH)
+    let pixels = [Float](repeating: 0, count: roiW * roiH * 3)
+    var cropped = try! RGBImage(data: pixels, width: roiW, height: roiH)
     src.data.withUnsafeBufferPointer { s in
         cropped.data.withUnsafeMutableBufferPointer { d in
             for y in 0..<roiH {

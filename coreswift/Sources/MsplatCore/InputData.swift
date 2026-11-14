@@ -10,7 +10,7 @@ public enum ImageSource {
 }
 
 /// Camera metadata: fixed data loaded from dataset (intrinsics, pose, dimensions).
-/// Value type that can be copied without duplicating runtime caches.
+/// Reference type to allow mutation of intrinsics during image loading.
 public final class CameraMeta {
     var width = 0, height = 0
     var fx: Float = 0, fy: Float = 0, cx: Float = 0, cy: Float = 0
@@ -36,16 +36,6 @@ public final class CameraMeta {
         }
     }
 
-    /// Value copy of metadata (for C++ copy constructor semantics).
-    func copy() -> CameraMeta {
-        let c = CameraMeta(imageSource: imageSource)
-        c.width = width; c.height = height
-        c.fx = fx; c.fy = fy; c.cx = cx; c.cy = cy
-        c.k1 = k1; c.k2 = k2; c.k3 = k3; c.p1 = p1; c.p2 = p2
-        c.camToWorld = camToWorld
-        return c
-    }
-
     var hasDistortion: Bool { k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0 }
 }
 
@@ -63,20 +53,6 @@ public final class RuntimeCamera {
     init(meta: CameraMeta) {
         self.meta = meta
     }
-
-    /// Value copy (C++ copy constructor semantics: caches are copied, GPU tensors shared).
-    func copy() -> RuntimeCamera {
-        let c = RuntimeCamera(meta: meta.copy())
-        c._loadedImage = _loadedImage
-        c.imagePyramids = imagePyramids
-        c.gpuImageCache = gpuImageCache
-        c.cachedViewMat = cachedViewMat
-        c.cachedProjViewMat = cachedProjViewMat
-        c.cachedCamPos = cachedCamPos
-        c.cachedFovX = cachedFovX
-        c.cachedFovY = cachedFovY
-        return c
-    }
     
     /// Load and process the base image with optional downscaling and distortion correction
     func loadImage(downscaleFactor: Float) throws {
@@ -88,8 +64,6 @@ public final class RuntimeCamera {
         case .data(let image):
             raw = image
         }
-        
-        if raw.isEmpty { return }
 
         // If actual image dimensions differ from metadata, rescale intrinsics
         if meta.width > 0 && meta.height > 0 && (raw.width != meta.width || raw.height != meta.height) {
@@ -178,27 +152,6 @@ public final class InputData {
     /// Camera-to-world pose (4x4 row-major, OpenGL) of a camera, or nil.
     public func cameraPose(at index: Int) -> [Float]? {
         cameras.indices.contains(index) ? cameras[index].meta.camToWorld : nil
-    }
-
-    /// Returns (train cameras, optional validation camera).
-    func getCameras(validate: Bool, valImage: String = "random") -> ([RuntimeCamera], RuntimeCamera?) {
-        if !validate { return (cameras.map { $0.copy() }, nil) }
-
-        var valIdx = -1
-        if valImage == "random" {
-            var rng = MT19937(seed: 42)
-            valIdx = Int(rng.next() % UInt32(cameras.count))
-        } else {
-            valIdx = cameras.firstIndex { cam in
-                guard let url = cam.meta.imageURL else { return false }
-                return url.path.contains(valImage)
-            } ?? -1
-        }
-        if valIdx < 0 { valIdx = 0 }
-
-        var train: [RuntimeCamera] = []
-        for (i, c) in cameras.enumerated() where i != valIdx { train.append(c.copy()) }
-        return (train, cameras[valIdx])
     }
 
     func saveCameras(to url: URL, keepCrs: Bool) throws {
