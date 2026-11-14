@@ -629,9 +629,12 @@ kernel void nd_rasterize_forward_kernel(
         // Fused clamp_max(output, 1.0) — saturate clamps to [0,1]
         float3 bg = {background[0], background[1], background[2]};
         float3 final_rgb = saturate(fma(bg, T, pix_out));
-        out_img[CHANNELS * pix_id + 0] = final_rgb.x;
-        out_img[CHANNELS * pix_id + 1] = final_rgb.y;
-        out_img[CHANNELS * pix_id + 2] = final_rgb.z;
+        out_img[channels * pix_id + 0] = final_rgb.x;
+        out_img[channels * pix_id + 1] = final_rgb.y;
+        out_img[channels * pix_id + 2] = final_rgb.z;
+        if (channels == 4) {
+            out_img[channels * pix_id + 3] = 1.0f - T;  // Alpha = 1 - transmittance
+        }
     }
 }
 
@@ -2808,9 +2811,10 @@ kernel void rasterize_forward_merge_kernel(
     device int* chunk_final_idx,    // [K_max, H, W] — device (not constant) for cutoff fixup
     device float* final_Ts,         // [H, W]
     device int* final_index,        // [H, W]
-    device float* out_img,          // [H, W, 3]
+    device float* out_img,          // [H, W, channels]
     constant float* background,
     constant uint2& img_size,       // (W, H)
+    constant uint& channels,
     uint2 gp [[thread_position_in_grid]]
 ) {
     uint px = gp.x;
@@ -2850,9 +2854,12 @@ kernel void rasterize_forward_merge_kernel(
     final_index[pix_id] = last_idx;
     float3 bg = {background[0], background[1], background[2]};
     float3 final_rgb = saturate(fma(bg, T_running, C_running));
-    out_img[CHANNELS * pix_id + 0] = final_rgb.x;
-    out_img[CHANNELS * pix_id + 1] = final_rgb.y;
-    out_img[CHANNELS * pix_id + 2] = final_rgb.z;
+    out_img[channels * pix_id + 0] = final_rgb.x;
+    out_img[channels * pix_id + 1] = final_rgb.y;
+    out_img[channels * pix_id + 2] = final_rgb.z;
+    if (channels == 4) {
+        out_img[channels * pix_id + 3] = 1.0f - T_running;  // Alpha = 1 - transmittance
+    }
 }
 
 // Compute prefix transmittance and suffix color for backward chunked rasterization.

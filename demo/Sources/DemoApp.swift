@@ -3,34 +3,7 @@ import MsplatCore
 import AppKit
 import QuartzCore
 
-// MARK: - Pixel conversion
 
-nonisolated(unsafe) var displayReady: Int32 = 1
-
-/// Convert SplatImage (RGB float32) to NSImage (RGBA uint8).
-func splatImageToNSImage(_ img: RGBImage) -> NSImage {
-    let w = img.width, h = img.height
-    let n = w * h
-    let rgba = UnsafeMutablePointer<UInt8>.allocate(capacity: n * 4)
-    img.data.withUnsafeBufferPointer { src in
-        for i in 0..<n {
-            rgba[i * 4]     = UInt8(min(max(src[i * 3], 0), 1) * 255)
-            rgba[i * 4 + 1] = UInt8(min(max(src[i * 3 + 1], 0), 1) * 255)
-            rgba[i * 4 + 2] = UInt8(min(max(src[i * 3 + 2], 0), 1) * 255)
-            rgba[i * 4 + 3] = 255
-        }
-    }
-    let data = Data(bytesNoCopy: rgba, count: n * 4, deallocator: .custom { ptr, _ in
-        ptr.deallocate()
-    })
-    let provider = CGDataProvider(data: data as CFData)!
-    let cgImg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
-                        bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
-                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                        provider: provider, decode: nil, shouldInterpolate: false,
-                        intent: .defaultIntent)!
-    return NSImage(cgImage: cgImg, size: NSSize(width: w, height: h))
-}
 
 // MARK: - Vector helpers
 
@@ -135,7 +108,7 @@ func computeOrbitParams(_ poses: [[Float]]) -> OrbitParams {
 @Observable
 final class Engine
 {
-	var image: NSImage?		//	NSImage not threadsafe, use CGImage
+	var image: CGImage?		//	NSImage not threadsafe, use CGImage
 	var iteration: Int = 0
 	var totalIterations: Int = 10_000
 	var splatCount: Int = 0
@@ -221,16 +194,27 @@ final class Engine
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 
-				if let splatImg = try trainer.render(cameraIndex: 0) 
+				let splatImg = try trainer.render(cameraIndex: 0, format: .rgba) 
+				
+				//	this can be done on another thread
+				do
 				{
-					let img = splatImageToNSImage(splatImg)
+					let cgImage = try splatImg.makeCGImage(useFloatComponents: true)
 					let iter = Int(stats.iteration)
 					let count = Int(stats.splatCount)
-					await MainActor.run {
-						self.image = img
+					await MainActor.run 
+					{
+						self.image = cgImage
 						self.iteration = iter
 						self.splatCount = count
 						self.msPerStep = avgMs
+					}
+				}
+				catch
+				{
+					await MainActor.run 
+					{
+						self.phase = .error(error)
 					}
 				}
 
@@ -245,6 +229,8 @@ final class Engine
 			self.phase = .orbiting
 		}
 
+		/*
+		
 		// Phase 2: Smooth circular orbit with zero-copy render
 		let poses = inputData.cameras.map { $0.meta.camToWorld }
 		let orbit = computeOrbitParams(poses)
@@ -308,9 +294,17 @@ final class Engine
 				}
 			}
 		}
+		 */
     }
 }
 
+extension CGImage
+{
+	var size : CGSize
+	{
+		return .init(width: width, height: height)
+	}
+}
 
 struct ContentView: View
 {
@@ -328,7 +322,7 @@ struct ContentView: View
 			Color.black
 			
 			if let img = engine.image {
-				Image(nsImage: img)
+				Image(nsImage: NSImage(cgImage: img, size: img.size))
 					.resizable()
 					.aspectRatio(contentMode: .fit)
 			}

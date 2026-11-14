@@ -571,7 +571,7 @@ final class Model {
             camPos: cam.cachedCamPos)
     }
 
-    private func renderParams(_ cam: RuntimeCamera, _ s: CamSetup) -> RenderParams {
+	private func renderParams(_ cam: RuntimeCamera, _ s: CamSetup, channels:Int) -> RenderParams {
         RenderParams(
             numPoints: means.size(0), means3d: means, scales: scales, globScale: 1.0,
             quats: quats, viewmat: cam.cachedViewMat, projmat: cam.cachedProjViewMat,
@@ -580,12 +580,12 @@ final class Model {
             tileBounds: s.tileBounds, clipThresh: 0.01,
             degree: UInt32(s.degree), degreesToUse: UInt32(s.degreesToUse), camPos: s.camPos,
             featuresDc: featuresDc, featuresRest: featuresRest,
-            opacities: opacities, background: backgroundColor)
+			opacities: opacities, background: backgroundColor, channels:UInt32(channels) )
     }
 
-    func render(_ cam: RuntimeCamera, step: Int) -> MTensor {
+    func render(_ cam: RuntimeCamera, step: Int, channels:Int) -> MTensor {
         let s = prepareCam(cam, step: step)
-        return msplatRender(renderParams(cam, s))
+		return msplatRender(renderParams(cam, s, channels:channels))
     }
 
     func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) {
@@ -614,7 +614,7 @@ final class Model {
         let invMaxDim = 1.0 / Float(max(lastHeight, lastWidth))
         let lossInvN = 1.0 / Float(s.height * s.width * 3)
 
-        let (r, _) = msplatTrainStep(renderParams(cam, s), TrainParams(
+        let (r, _) = msplatTrainStep(renderParams(cam, s, channels: 3), TrainParams(
             gt: gt, window2d: window2d, ssimWeight: ssimWeight,
             lossInvN: lossInvN, featuresRestBases: featuresRest.size(-2),
             adamParams: paramViews, adamExpAvg: adamExpAvg, adamExpAvgSq: adamExpAvgSq,

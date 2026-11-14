@@ -215,25 +215,32 @@ public final class SplatTrainer {
         return MsplatEvalMetrics()
     }
 
-    private func renderToImage(_ cam: RuntimeCamera) throws -> RGBImage {
-        let rgb = model.render(cam, step: currentStep)
+	private func renderToImage(_ cam: RuntimeCamera,format:RGBImage.ImageFormat) throws -> RGBImage {
+		let rgb = model.render(cam, step: currentStep, channels: format.channels)
         msplatGpuSync()
         let h = rgb.size(0), w = rgb.size(1)
-		let format = RGBImage.ImageFormat.rgb
 		let pixels = Array(UnsafeBufferPointer(start: rgb.floats(), count: h * w * format.channels))
         return try RGBImage(data: pixels, width: w, height: h, format: format)
     }
 
     /// Render a camera view. Nil if the index is out of range.
-    public func render(cameraIndex: Int) throws -> RGBImage? {
-        guard dataset.cameras.indices.contains(cameraIndex) else { return nil }
-        return try renderToImage(dataset.cameras[cameraIndex])
+    public func render(cameraIndex: Int,format:RGBImage.ImageFormat) throws -> RGBImage
+	{
+		guard dataset.cameras.indices.contains(cameraIndex) else 
+		{
+			throw MsplatError("No such camera \(cameraIndex)/\(dataset.cameras.count)")
+		}
+		return try renderToImage(dataset.cameras[cameraIndex],format:format)
     }
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
-    private func GetNewRuntimeCamera(_ camToWorld: [Float], _ refCameraIndex: Int) throws -> RuntimeCamera? {
+    private func GetNewRuntimeCamera(_ camToWorld: [Float], _ refCameraIndex: Int) throws -> RuntimeCamera
+	{
         precondition(camToWorld.count == 16, "camToWorld must have 16 elements")
-        guard dataset.cameras.indices.contains(refCameraIndex) else { return nil }
+        guard dataset.cameras.indices.contains(refCameraIndex) else 
+		{
+			throw MsplatError("No such camera \(refCameraIndex)/\(dataset.cameras.count)")
+		}
         let refCam = dataset.cameras[refCameraIndex]
         
         // Create new meta with same intrinsics but different pose
@@ -252,18 +259,20 @@ public final class SplatTrainer {
 
     /// Render from an arbitrary camera-to-world pose (4x4 row-major, OpenGL convention),
     /// using the intrinsics of a reference training camera.
-    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0) throws -> RGBImage? {
-        guard let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex) else { return nil }
-        return try renderToImage(cam)
+    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0, format: RGBImage.ImageFormat) throws -> RGBImage? 
+	{
+        let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex)
+		return try renderToImage(cam, format:format)
     }
 
     /// Render from pose straight into a caller-provided RGBA8 buffer (≥ w*h*4 bytes).
     /// Pass nil to just query the output size. Returns (0, 0) for a bad camera index.
     @discardableResult
     public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0,
-                               into rgba: UnsafeMutablePointer<UInt8>?) throws -> (width: Int, height: Int) {
-        guard let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex) else { return (0, 0) }
-        let rgb = model.render(cam, step: currentStep)
+                               into rgba: UnsafeMutablePointer<UInt8>?) throws -> (width: Int, height: Int)
+	{
+        let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex)
+        let rgb = model.render(cam, step: currentStep, channels: 4)
         msplatGpuSync()
         let h = rgb.size(0), w = rgb.size(1)
         guard let out = rgba else { return (w, h) }

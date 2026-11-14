@@ -60,7 +60,7 @@ extension MTLBlitCommandEncoder {
 /// densification or resolution changes.
 struct FusedTensorCache {
     var fwdNumPoints = 0, capacity = 0, imgHeight = 0, imgWidth = 0, numTiles = 0
-    var bwdNumPoints = 0, featuresRestBases = 0
+    var bwdNumPoints = 0, featuresRestBases = 0, channels = 0
 
     // Forward intermediates
     var xys = MTensor(), depths = MTensor(), radiiOut = MTensor(), conics = MTensor()
@@ -93,7 +93,7 @@ struct FusedTensorCache {
     var vXy = MTensor(), vConic = MTensor(), vColorsRast = MTensor(), vOpacity = MTensor(), vDepth = MTensor()
     var vMean3d = MTensor(), vScale = MTensor(), vQuat = MTensor(), vFeaturesDc = MTensor(), vFeaturesRest = MTensor()
 
-    mutating func ensureForward(np: Int, cap: Int, ih: Int, iw: Int, nt: Int, ctx: MetalContext) {
+    mutating func ensureForward(np: Int, cap: Int, ih: Int, iw: Int, nt: Int, ch: Int, ctx: MetalContext) {
         if np != fwdNumPoints {
             fwdNumPoints = np
             xys = ctx.makeEmpty([np, 2], .float32)
@@ -112,14 +112,14 @@ struct FusedTensorCache {
             packedConic = ctx.makeEmpty([cap, 3], .float32)
             packedRgb = ctx.makeEmpty([cap, 3], .float32)
         }
-        if ih != imgHeight || iw != imgWidth {
-            imgHeight = ih; imgWidth = iw
-            outImg = ctx.makeEmpty([ih, iw, 3], .float32)
+        if ih != imgHeight || iw != imgWidth || ch != channels {
+            imgHeight = ih; imgWidth = iw; channels = ch
+            outImg = ctx.makeEmpty([ih, iw, ch], .float32)
             finalTs = ctx.makeEmpty([ih, iw], .float32)
             finalIdx = ctx.makeEmpty([ih, iw], .int32)
             lossIntermediates = ctx.makeEmpty([ih, iw, 15], .float32)
             ssimHBuf = ctx.makeEmpty([ih, iw, 15], .float32)
-            vRendered = ctx.makeEmpty([ih, iw, 3], .float32)
+            vRendered = ctx.makeEmpty([ih, iw, ch], .float32)
         }
         if nt != numTiles {
             numTiles = nt
@@ -132,15 +132,15 @@ struct FusedTensorCache {
         if !overflowFlag.defined { overflowFlag = ctx.makeEmpty([1], .int32) }
     }
 
-    mutating func ensureChunks(k: Int, ih: Int, iw: Int, ctx: MetalContext) {
+    mutating func ensureChunks(k: Int, ih: Int, iw: Int, ch: Int, ctx: MetalContext) {
         if k <= chunkKMax && ih == chunkH && iw == chunkW { return }
         chunkKMax = k
         chunkH = ih; chunkW = iw
         chunkT = ctx.makeEmpty([k, ih, iw], .float32)
-        chunkC = ctx.makeEmpty([k, ih, iw, 3], .float32)
+        chunkC = ctx.makeEmpty([k, ih, iw, ch], .float32)
         chunkFinalIdx = ctx.makeEmpty([k, ih, iw], .int32)
         prefixT = ctx.makeEmpty([k, ih, iw], .float32)
-        afterC = ctx.makeEmpty([k, ih, iw, 3], .float32)
+        afterC = ctx.makeEmpty([k, ih, iw, ch], .float32)
     }
 
     mutating func ensureBackward(np: Int, frb: Int, ctx: MetalContext) {
@@ -189,6 +189,7 @@ struct RenderParams {
     var featuresRest: MTensor
     var opacities: MTensor
     var background: MTensor
+    var channels: UInt32  // 3 for RGB, 4 for RGBA
 }
 
 /// Training-only inputs to the fused step.
@@ -350,7 +351,7 @@ private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContex
 private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
                            _ p: RenderParams, _ k: Consts, kMax: UInt32) {
     let c = gTensorCache
-    let channels: UInt32 = 3
+    let channels = p.channels
     let w = Int(p.imgWidth), h = Int(p.imgHeight)
     let tileX = (w + RAST_BLOCK_X - 1) / RAST_BLOCK_X
     let tileY = (h + RAST_BLOCK_Y - 1) / RAST_BLOCK_Y
@@ -387,6 +388,7 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
         enc.setTensor(c.finalTs, 5); enc.setTensor(c.finalIdx, 6); enc.setTensor(c.outImg, 7)
         enc.setTensor(p.background, 8)
         enc.setArray(k.imgSize2, 9)
+        enc.setScalar(channels, 10)
         enc.dispatchThreads(MTLSize(width: w, height: h, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
     }
@@ -402,7 +404,7 @@ func msplatRender(_ p: RenderParams) -> MTensor {
 
     let k = Consts(p)
     gTensorCache.ensureForward(np: p.numPoints, cap: k.capacity, ih: Int(p.imgHeight),
-                               iw: Int(p.imgWidth), nt: k.numTiles, ctx: ctx)
+                               iw: Int(p.imgWidth), nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
 
     renderDiagCount += 1
     if benchmarkEnabled && [100, 500, 1500].contains(renderDiagCount) {
@@ -425,7 +427,7 @@ func msplatRender(_ p: RenderParams) -> MTensor {
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1 {
-        gTensorCache.ensureChunks(k: Int(kMax), ih: Int(p.imgHeight), iw: Int(p.imgWidth), ctx: ctx)
+        gTensorCache.ensureChunks(k: Int(kMax), ih: Int(p.imgHeight), iw: Int(p.imgWidth), ch: Int(p.channels), ctx: ctx)
     }
 
     let cb = ctx.commandBuffer()
@@ -483,12 +485,12 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams) -> (radii: MTensor, lo
                       Double(total) / Double(max(1, ntPrev)), Int(maxc)))
     }
 
-    gTensorCache.ensureForward(np: p.numPoints, cap: k.capacity, ih: h, iw: w, nt: k.numTiles, ctx: ctx)
+    gTensorCache.ensureForward(np: p.numPoints, cap: k.capacity, ih: h, iw: w, nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
     gTensorCache.ensureBackward(np: p.numPoints, frb: t.featuresRestBases, ctx: ctx)
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1 {
-        gTensorCache.ensureChunks(k: Int(kMax), ih: h, iw: w, ctx: ctx)
+        gTensorCache.ensureChunks(k: Int(kMax), ih: h, iw: w, ch: Int(p.channels), ctx: ctx)
     }
     let bwdKMax = kMax
 

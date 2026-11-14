@@ -141,6 +141,131 @@ public struct RGBImage
 
 		try self.init(data: rgb.data, width: rgb.width, height: rgb.height, format: .rgb)
     }
+	
+	/// Create a CGImage from this RGBImage
+	/// - Parameter useFloatComponents: If true, uses 32-bit float components (faster, zero-copy for RGBA). If false, converts to 8-bit (more compatible).
+	/// - Returns: A CGImage 
+	/// - Throws: If CGDataProvider or CGImage creation fails
+	public func makeCGImage(useFloatComponents: Bool = false) throws -> CGImage {
+		if useFloatComponents {
+			// Fast path: Use float components directly (values 0-1, interpreted as floats)
+			let componentsPerPixel = 4
+			let bytesPerComponent = MemoryLayout<Float>.size
+			let bytesPerRow = width * componentsPerPixel * bytesPerComponent
+			guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+				throw MsplatError("Failed to create sRGB color space")
+			}
+			let bitmapInfo = CGBitmapInfo(rawValue:
+				CGImageAlphaInfo.premultipliedLast.rawValue |
+				CGBitmapInfo.floatComponents.rawValue |
+				CGBitmapInfo.byteOrder32Little.rawValue)
+			
+			if channels == 4 {
+				// Zero-copy path for RGBA
+				guard let provider = CGDataProvider(data: Data(bytes: data, count: data.count * bytesPerComponent) as CFData) else {
+					throw MsplatError("Failed to create CGDataProvider")
+				}
+				
+				guard let cgImage = CGImage(
+					width: width,
+					height: height,
+					bitsPerComponent: 32,
+					bitsPerPixel: componentsPerPixel * 32,
+					bytesPerRow: bytesPerRow,
+					space: colorSpace,
+					bitmapInfo: bitmapInfo,
+					provider: provider,
+					decode: nil,
+					shouldInterpolate: true,
+					intent: .defaultIntent
+				) else {
+					throw MsplatError("Failed to create CGImage")
+				}
+				return cgImage
+			} else {
+				// RGB -> RGBA with float components
+				var rgba = [Float](repeating: 0, count: width * height * componentsPerPixel)
+				for i in 0..<(width * height) {
+					rgba[i * 4 + 0] = data[i * 3 + 0]
+					rgba[i * 4 + 1] = data[i * 3 + 1]
+					rgba[i * 4 + 2] = data[i * 3 + 2]
+					rgba[i * 4 + 3] = 1.0
+				}
+				
+				guard let provider = CGDataProvider(data: Data(bytes: rgba, count: rgba.count * bytesPerComponent) as CFData) else {
+					throw MsplatError("Failed to create CGDataProvider")
+				}
+				
+				guard let cgImage = CGImage(
+					width: width,
+					height: height,
+					bitsPerComponent: 32,
+					bitsPerPixel: componentsPerPixel * 32,
+					bytesPerRow: bytesPerRow,
+					space: colorSpace,
+					bitmapInfo: bitmapInfo,
+					provider: provider,
+					decode: nil,
+					shouldInterpolate: true,
+					intent: .defaultIntent
+				) else {
+					throw MsplatError("Failed to create CGImage")
+				}
+				return cgImage
+			}
+		} else {
+			// Standard path: Convert to 8-bit RGBA (most compatible)
+			let n = width * height
+			let rgba = UnsafeMutablePointer<UInt8>.allocate(capacity: n * 4)
+			
+			// Convert float RGB/RGBA to 8-bit RGBA
+			data.withUnsafeBufferPointer { src in
+				if channels == 3 {
+					// RGB -> RGBA
+					for i in 0..<n {
+						rgba[i * 4 + 0] = UInt8(min(max(src[i * 3 + 0], 0), 1) * 255)
+						rgba[i * 4 + 1] = UInt8(min(max(src[i * 3 + 1], 0), 1) * 255)
+						rgba[i * 4 + 2] = UInt8(min(max(src[i * 3 + 2], 0), 1) * 255)
+						rgba[i * 4 + 3] = 255
+					}
+				} else if channels == 4 {
+					// RGBA -> RGBA
+					for i in 0..<n {
+						rgba[i * 4 + 0] = UInt8(min(max(src[i * 4 + 0], 0), 1) * 255)
+						rgba[i * 4 + 1] = UInt8(min(max(src[i * 4 + 1], 0), 1) * 255)
+						rgba[i * 4 + 2] = UInt8(min(max(src[i * 4 + 2], 0), 1) * 255)
+						rgba[i * 4 + 3] = UInt8(min(max(src[i * 4 + 3], 0), 1) * 255)
+					}
+				}
+			}
+			
+			let imageData = Data(bytesNoCopy: rgba, count: n * 4, deallocator: .custom { ptr, _ in
+				ptr.deallocate()
+			})
+			
+			guard let provider = CGDataProvider(data: imageData as CFData) else {
+				throw MsplatError("Failed to create CGDataProvider")
+			}
+			
+			guard let cgImage = CGImage(
+				width: width,
+				height: height,
+				bitsPerComponent: 8,
+				bitsPerPixel: 32,
+				bytesPerRow: width * 4,
+				space: CGColorSpaceCreateDeviceRGB(),
+				bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+				provider: provider,
+				decode: nil,
+				shouldInterpolate: false,
+				intent: .defaultIntent
+			) else {
+				throw MsplatError("Failed to create CGImage")
+			}
+			
+			return cgImage
+		}
+	}
 }
 
 /// Area-based (box filter) resize.
