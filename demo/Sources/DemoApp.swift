@@ -132,248 +132,214 @@ func computeOrbitParams(_ poses: [[Float]]) -> OrbitParams {
 // MARK: - Engine
 
 @MainActor
-final class Engine: ObservableObject {
-    @Published var image: NSImage?
-    @Published var iteration: Int = 0
-    @Published var totalIterations: Int = 10_000
-    @Published var splatCount: Int = 0
-    @Published var msPerStep: Float = 0
-    @Published var fps: Float = 0
-    @Published var phase: Phase = .countdown(5)
-    @Published var countdown: Int = 5
+@Observable
+final class Engine
+{
+	var image: NSImage?		//	NSImage not threadsafe, use CGImage
+	var iteration: Int = 0
+	var totalIterations: Int = 10_000
+	var splatCount: Int = 0
+	var msPerStep: Float = 0
+	var fps: Float = 0
+	var phase : Phase
+	var task : Task<Void,Never>!
 
-    enum Phase: Equatable {
-        case countdown(Int), loading, training, orbiting
-    }
-
-    func start(datasetPath: String) {
-        phase = .countdown(5)
-        countdown = 5
-
-        // 5-second countdown on main thread
-		//	why?
-        Task { @MainActor in
-			/*
-            for s in stride(from: 4, through: 0, by: -1) {
-                try? await Task.sleep(for: .seconds(1))
-                self.countdown = s
-                self.phase = .countdown(s)
-            }*/
-            self.phase = .loading
-            self.beginTraining(datasetPath: datasetPath)
-        }
-    }
-
-    private func beginTraining(datasetPath: String) 
+	enum Phase
 	{
-        let totalIterations = Int32(self.totalIterations)
-        
-        Task.detached 
-		{ 
-			[weak self] in
-            guard let self else { return }
-            
-            // Load dataset using new API
-            let splatDataset: SplatInputData
-            do {
-                let url = URL(fileURLWithPath: datasetPath)
-                // First load metadata-only InputData
-				let inputData = try await SplatDatasetLoader.load(from: url, colmapImagePath: nil)
-                // Then create SplatInputData with loaded images (downscaled if needed)
-                splatDataset = try SplatInputData(from: inputData, downscaleFactor: 1.0)
-            } 
-			catch 
+		case error(Error)
+		case loading(String,URL?)
+		case training
+		case orbiting
+	}
+	
+	@MainActor deinit
+	{
+		task.cancel()
+	}
+
+	init(datasetPath: URL) 
+	{
+		phase = .loading("Init", nil)
+		task = Task.detached 
+		{
+			do
 			{
-                print("Failed to load dataset: \(error)")
-                return
-            }
-            
-            var config = MsplatConfig()
-            config.iterations = totalIterations
-            config.numDownscales = 0
-            config.bgColor = (0, 0, 0)
-            
-            let trainer: SplatTrainer
-            do {
-                trainer = try SplatTrainer(dataset: splatDataset, config: config)
-            } catch {
-                print("Failed to create trainer: \(error)")
-                return
-            }
+				await MainActor.run
+				{
+					self.phase = .loading("DataSet",datasetPath)
+				}
+				
+				let inputData = try await SplatDatasetLoader.load(from: datasetPath, colmapImagePath: nil)
+				let splatDataset = try await SplatInputData(from: inputData, downscaleFactor: 1.0)
+				{
+					let newPhase = Phase.loading($0,$1)
+					Task{ @MainActor in
+						self.phase = newPhase
+					}
+				}
+			
+				await MainActor.run
+				{
+					self.phase = .training
+				}
+				try await self.beginTraining(inputData: splatDataset)
+			}
+			catch
+			{
+				await MainActor.run
+				{
+					self.phase = .error(error)
+				}
+			}
+		}
+	}
 
-            await MainActor.run { self.phase = .training }
+	private func beginTraining(inputData:SplatInputData) async throws
+	{
+		let inputData = inputData.autoScaleAndCenter()
+        let totalIterations = Int32(self.totalIterations)
 
-            // Phase 1: Training
-            var batchStart = CACurrentMediaTime()
-            var batchSteps = 0
+		
+		var config = MsplatConfig()
+		config.iterations = totalIterations
+		config.numDownscales = 0
+		config.bgColor = (0, 0, 0)
+		
+		let trainer = try SplatTrainer(dataset: inputData, config: config)
 
-            for i in 0..<config.iterations {
-                let stats = trainer.step()
-                batchSteps += 1
 
-                if i % 25 == 0 || i == config.iterations-1 {
-                    let batchEnd = CACurrentMediaTime()
-                    let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
+		// Phase 1: Training
+		var batchStart = CACurrentMediaTime()
+		var batchSteps = 0
 
-                    if let splatImg = trainer.render(cameraIndex: 0) {
-                        let img = splatImageToNSImage(splatImg)
-                        let iter = Int(stats.iteration)
-                        let count = Int(stats.splatCount)
-                        await MainActor.run {
-                            self.image = img
-                            self.iteration = iter
-                            self.splatCount = count
-                            self.msPerStep = avgMs
-                        }
-                    }
+		for i in 0..<config.iterations 
+		{
+			let stats = trainer.step()
+			batchSteps += 1
 
-                    batchStart = CACurrentMediaTime()
-                    batchSteps = 0
-                }
-            }
+			if i % 25 == 0 || i == config.iterations-1 {
+				let batchEnd = CACurrentMediaTime()
+				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 
-            let finalCount = trainer.splatCount
-            await MainActor.run {
-                self.splatCount = finalCount
-                self.phase = .orbiting
-            }
+				if let splatImg = trainer.render(cameraIndex: 0) {
+					let img = splatImageToNSImage(splatImg)
+					let iter = Int(stats.iteration)
+					let count = Int(stats.splatCount)
+					await MainActor.run {
+						self.image = img
+						self.iteration = iter
+						self.splatCount = count
+						self.msPerStep = avgMs
+					}
+				}
 
-            // Phase 2: Smooth circular orbit with zero-copy render
-            let poses = splatDataset.cameras.map { $0.meta.camToWorld }
-            let orbit = computeOrbitParams(poses)
-            var frameCount = 0
-            var fpsTimer = CACurrentMediaTime()
+				batchStart = CACurrentMediaTime()
+				batchSteps = 0
+			}
+		}
 
-            // Query dimensions once to pre-allocate RGBA buffer
-            var imgW: Int = 0, imgH: Int = 0
-            let firstPose = lookAtCamToWorld(eye: orbit.eyeCenter, target: orbit.lookAt, up: orbit.up)
-            (imgW, imgH) = try trainer.renderFromPose(camToWorld: firstPose, refCameraIndex: 0, into: nil)
-            let rgbaBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: imgW * imgH * 4)
-            for i in 0..<(imgW * imgH) { rgbaBuf[i * 4 + 3] = 255 }
+		let finalCount = trainer.splatCount
+		await MainActor.run {
+			self.splatCount = finalCount
+			self.phase = .orbiting
+		}
 
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+		// Phase 2: Smooth circular orbit with zero-copy render
+		let poses = inputData.cameras.map { $0.meta.camToWorld }
+		let orbit = computeOrbitParams(poses)
+		var frameCount = 0
+		var fpsTimer = CACurrentMediaTime()
 
-            let orbitPeriod: Double = 7.5  // seconds per full revolution
-            let orbitStart = CACurrentMediaTime()
+		// Query dimensions once to pre-allocate RGBA buffer
+		var imgW: Int = 0, imgH: Int = 0
+		let firstPose = lookAtCamToWorld(eye: orbit.eyeCenter, target: orbit.lookAt, up: orbit.up)
+		(imgW, imgH) = try trainer.renderFromPose(camToWorld: firstPose, refCameraIndex: 0, into: nil)
+		let rgbaBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: imgW * imgH * 4)
+		for i in 0..<(imgW * imgH) { rgbaBuf[i * 4 + 3] = 255 }
 
-            while true {
-                let elapsed = CACurrentMediaTime() - orbitStart
-                let angle = Float(elapsed / orbitPeriod) * 2.0 * .pi
-                let cosA = cos(angle), sinA = sin(angle)
-                let t1 = orbit.tangent1, t2 = orbit.tangent2
-                let eye = (
-                    orbit.eyeCenter.0 + orbit.radius * (cosA * t1.0 + sinA * t2.0),
-                    orbit.eyeCenter.1 + orbit.radius * (cosA * t1.1 + sinA * t2.1),
-                    orbit.eyeCenter.2 + orbit.radius * (cosA * t1.2 + sinA * t2.2)
-                )
+		let colorSpace = CGColorSpaceCreateDeviceRGB()
+		let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
 
-                let pose = lookAtCamToWorld(eye: eye, target: orbit.lookAt, up: orbit.up)
-                (imgW, imgH) = try trainer.renderFromPose(camToWorld: pose, refCameraIndex: 0, into: rgbaBuf)
-                frameCount += 1
+		let orbitPeriod: Double = 7.5  // seconds per full revolution
+		let orbitStart = CACurrentMediaTime()
 
-                var currentFps: Float = 0
-                let now = CACurrentMediaTime()
-                let dt = now - fpsTimer
-                if dt >= 0.5 {
-                    currentFps = Float(frameCount) / Float(dt)
-                    frameCount = 0
-                    fpsTimer = now
-                }
+		while true {
+			let elapsed = CACurrentMediaTime() - orbitStart
+			let angle = Float(elapsed / orbitPeriod) * 2.0 * .pi
+			let cosA = cos(angle), sinA = sin(angle)
+			let t1 = orbit.tangent1, t2 = orbit.tangent2
+			let eye = (
+				orbit.eyeCenter.0 + orbit.radius * (cosA * t1.0 + sinA * t2.0),
+				orbit.eyeCenter.1 + orbit.radius * (cosA * t1.1 + sinA * t2.1),
+				orbit.eyeCenter.2 + orbit.radius * (cosA * t1.2 + sinA * t2.2)
+			)
 
-                // Only push to UI if main thread consumed previous frame
-                if OSAtomicCompareAndSwap32(1, 0, &displayReady) {
-                    let provider = CGDataProvider(dataInfo: nil, data: rgbaBuf,
-                                                   size: imgW * imgH * 4,
-                                                   releaseData: { _, _, _ in })!
-                    let cgImg = CGImage(width: imgW, height: imgH,
-                                        bitsPerComponent: 8, bitsPerPixel: 32,
-                                        bytesPerRow: imgW * 4, space: colorSpace,
-                                        bitmapInfo: bitmapInfo, provider: provider,
-                                        decode: nil, shouldInterpolate: false,
-                                        intent: .defaultIntent)!
-                    let img = NSImage(cgImage: cgImg, size: NSSize(width: imgW, height: imgH))
-                    let fpsVal = currentFps
-                    await MainActor.run {
-                        self.image = img
-                        if fpsVal > 0 { self.fps = fpsVal }
-                        OSAtomicCompareAndSwap32(0, 1, &displayReady)
-                    }
-                }
-            }
-        }
+			let pose = lookAtCamToWorld(eye: eye, target: orbit.lookAt, up: orbit.up)
+			(imgW, imgH) = try trainer.renderFromPose(camToWorld: pose, refCameraIndex: 0, into: rgbaBuf)
+			frameCount += 1
+
+			var currentFps: Float = 0
+			let now = CACurrentMediaTime()
+			let dt = now - fpsTimer
+			if dt >= 0.5 {
+				currentFps = Float(frameCount) / Float(dt)
+				frameCount = 0
+				fpsTimer = now
+			}
+
+			// Only push to UI if main thread consumed previous frame
+			if OSAtomicCompareAndSwap32(1, 0, &displayReady) {
+				let provider = CGDataProvider(dataInfo: nil, data: rgbaBuf,
+											   size: imgW * imgH * 4,
+											   releaseData: { _, _, _ in })!
+				let cgImg = CGImage(width: imgW, height: imgH,
+									bitsPerComponent: 8, bitsPerPixel: 32,
+									bytesPerRow: imgW * 4, space: colorSpace,
+									bitmapInfo: bitmapInfo, provider: provider,
+									decode: nil, shouldInterpolate: false,
+									intent: .defaultIntent)!
+				let img = NSImage(cgImage: cgImg, size: NSSize(width: imgW, height: imgH))
+				let fpsVal = currentFps
+				await MainActor.run {
+					self.image = img
+					if fpsVal > 0 { self.fps = fpsVal }
+					OSAtomicCompareAndSwap32(0, 1, &displayReady)
+				}
+			}
+		}
     }
 }
 
-// MARK: - UI
 
-struct ContentView: View {
-    @StateObject private var engine = Engine()
-    let datasetPath: String
+struct ContentView: View
+{
+	@State var engine : Engine
 
-    var body: some View {
-        ZStack {
-            Color.black
-
-            if let img = engine.image {
-                Image(nsImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            }
-
-            if case .countdown(let s) = engine.phase {
-                Text("\(s)")
-                    .font(.system(size: 120, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.8))
-            }
-
-            if engine.phase == .loading {
-                VStack {
-                    ProgressView()
-                        .scaleEffect(1.5)
-                        .tint(.white)
-                    Text("Loading dataset...")
-                        .foregroundStyle(.white)
-                        .padding(.top, 8)
-                }
-            }
-
-            if engine.phase == .training || engine.phase == .orbiting {
-                VStack(spacing: 0) {
-                    Spacer()
-
-                    // Full-width progress bar during training
-                    if engine.phase == .training {
-                        progressBar
-                    }
-
-                    // Full-width stats bar
-                    statsBar
-                }
-            }
-
-            // Prominent FPS counter top-right during orbit
-            if engine.phase == .orbiting {
-                VStack {
-                    HStack {
-                        Spacer()
-                        Text(String(format: "%.0f FPS", engine.fps))
-                            .font(.system(size: 36, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 10)
-                            .background(.black.opacity(0.7))
-                            .cornerRadius(12)
-                            .padding(20)
-                    }
-                    Spacer()
-                }
-            }
-        }
-        .onAppear {
-            engine.start(datasetPath: datasetPath)
-        }
-    }
+	init(datasetPath:URL)
+	{
+		engine = Engine(datasetPath: datasetPath)
+	}
+	
+    var body: some View 
+	{
+		ZStack 
+		{
+			Color.black
+			
+			if let img = engine.image {
+				Image(nsImage: img)
+					.resizable()
+					.aspectRatio(contentMode: .fit)
+			}
+			
+			switch engine.phase
+			{
+				case .loading(let name,let url):	LoadingView(name: name, url:url)
+				case .training, .orbiting:			TrainingView()
+				case .error(let error):				ErrorView(error: error)
+			}
+		}
+	}
 
     private var progressBar: some View {
         let progress = Double(engine.iteration) / Double(engine.totalIterations)
@@ -398,9 +364,12 @@ struct ContentView: View {
 
     private var statsBar: some View {
         HStack(spacing: 32) {
-            switch engine.phase {
-            case .countdown, .loading:
-                EmptyView()
+            switch engine.phase 
+			{
+				case .loading:
+					Text("Loading...")
+				case .error(let error):
+					Text("Error: \(error.localizedDescription)")
             case .training:
                 Text("step \(engine.iteration) / \(engine.totalIterations)")
                 Text("\(fmtCount(engine.splatCount)) splats")
@@ -422,6 +391,66 @@ struct ContentView: View {
         if n >= 1_000 { return String(format: "%.0fK", Double(n) / 1_000) }
         return "\(n)"
     }
+	
+	
+	@ViewBuilder func LoadingView(name:String,url:URL?) -> some View
+	{
+		let filename = url.map{ $0.lastPathComponent } ?? ""
+		VStack 
+		{
+			ProgressView()
+				.scaleEffect(1.5)
+				.tint(.white)
+			Text("Loading \(filename) \(name)...")
+				.foregroundStyle(.white)
+				.padding(.top, 8)
+		}
+	}
+	
+	@ViewBuilder func ErrorView(error:Error) -> some View
+	{
+		Text("Error: \(error.localizedDescription)")
+			.padding(10)
+			.background(.red)
+			.foregroundStyle(.white)
+	}
+	
+	@ViewBuilder func TrainingView() -> some View
+	{
+		VStack(spacing: 0) 
+		{
+			Spacer()
+			
+			progressBar
+			
+			// Full-width stats bar
+			statsBar
+		}
+	}
+	
+	@ViewBuilder func OrbitingView() -> some View
+	{
+		// Prominent FPS counter top-right during orbit
+		TrainingView()
+			.overlay
+		{
+			VStack {
+				HStack {
+					Spacer()
+					Text(String(format: "%.0f FPS", engine.fps))
+						.font(.system(size: 36, weight: .bold, design: .monospaced))
+						.foregroundStyle(.white)
+						.padding(.horizontal, 20)
+						.padding(.vertical, 10)
+						.background(.black.opacity(0.7))
+						.cornerRadius(12)
+						.padding(20)
+				}
+				Spacer()
+			}
+		}
+	}
+	
 }
 
 // MARK: - App entry
@@ -436,19 +465,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct DemoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    let datasetPath: String
+    let datasetPath: URL
 
     init() {
         let args = CommandLine.arguments
 		
-		if let url = Bundle.module.url(forResource: "datasets/mipnerf360/garden", withExtension: nil) {
-			datasetPath = url.path  // Convert URL to path string
-		} else {
-			datasetPath = args.count > 1 ? args[1] : "datasets/mipnerf360/garden"
+		if let url = Bundle.module.url(forResource: "datasets/mipnerf360/garden", withExtension: nil) 
+		{
+			datasetPath = url  // Convert URL to path string
+		}
+		else
+		{
+			let path = args.count > 1 ? args[1] : "datasets/mipnerf360/garden"
+			datasetPath = URL(filePath: path)
 		}
     }
 
-    var body: some Scene {
+    var body: some Scene 
+	{
         WindowGroup {
             ContentView(datasetPath: datasetPath)
                 .frame(minWidth: 960, minHeight: 640)
