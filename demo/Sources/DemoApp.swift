@@ -151,11 +151,12 @@ final class Engine
 					}
 				}
 			
-				await MainActor.run
+				let totalIterations = await MainActor.run
 				{
 					self.phase = .training
+					return self.totalIterations
 				}
-				try await self.beginTraining(inputData: splatDataset)
+				try await self.performTraining(inputData: splatDataset, totalIterations: totalIterations)
 			}
 			catch
 			{
@@ -167,19 +168,16 @@ final class Engine
 		}
 	}
 
-	private func beginTraining(inputData:SplatInputData) async throws
+	nonisolated private func performTraining(inputData:SplatInputData, totalIterations: Int) async throws
 	{
 		let inputData = inputData.autoScaleAndCenter()
-        let totalIterations = Int32(self.totalIterations)
-
 		
 		var config = MsplatConfig()
-		config.iterations = totalIterations
+		config.iterations = Int32(totalIterations)
 		config.numDownscales = 0
 		config.bgColor = (0, 0, 0)
 		
 		let trainer = try SplatTrainer(dataset: inputData, config: config)
-
 
 		// Phase 1: Training
 		var batchStart = CACurrentMediaTime()
