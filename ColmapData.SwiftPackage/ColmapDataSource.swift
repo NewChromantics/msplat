@@ -376,9 +376,12 @@ public struct ColmapDatasetSource
 	
 	private func convertWorldToCameraToCameraToWorld(quat: [Double], translation: [Double]) -> [Float] {
 		// COLMAP stores world-to-camera transform as quaternion + translation
-		// We need to convert to camera-to-world (4x4 row-major, OpenGL convention)
+		// We need to convert to camera-to-world (4x4 row-major, OpenGL convention: Y-up, Z-back)
 		
-		let qw = quat[0], qx = quat[1], qy = quat[2], qz = quat[3]
+		// Normalize quaternion first (important!)
+		var qw = quat[0], qx = quat[1], qy = quat[2], qz = quat[3]
+		let n = (qw * qw + qx * qx + qy * qy + qz * qz).squareRoot()
+		qw /= n; qx /= n; qy /= n; qz /= n
 		
 		// Build rotation matrix from quaternion (world-to-camera)
 		let r11 = 1.0 - 2.0 * (qy * qy + qz * qz)
@@ -399,11 +402,13 @@ public struct ColmapDatasetSource
 		let cy = -(r12 * translation[0] + r22 * translation[1] + r32 * translation[2])
 		let cz = -(r13 * translation[0] + r23 * translation[1] + r33 * translation[2])
 		
-		// Build camera-to-world matrix (row-major)
+		// Build camera-to-world matrix (row-major) with transposed rotation and OpenGL Y/Z flip
+		// COLMAP uses Y-down, Z-forward; OpenGL uses Y-up, Z-back
+		// So we transpose the rotation (r11->r11, r12->r21, r13->r31, etc.) and negate Y and Z columns
 		return [
-			Float(r11), Float(r12), Float(r13), Float(cx),
-			Float(r21), Float(r22), Float(r23), Float(cy),
-			Float(r31), Float(r32), Float(r33), Float(cz),
+			Float(r11), Float(-r21), Float(-r31), Float(cx),
+			Float(r12), Float(-r22), Float(-r32), Float(cy),
+			Float(r13), Float(-r23), Float(-r33), Float(cz),
 			0, 0, 0, 1
 		]
 	}
