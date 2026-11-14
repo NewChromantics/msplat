@@ -1,0 +1,576 @@
+// Port of model.hpp / model.cpp: gaussian parameters, Adam state in oversized
+// backing buffers, schedules, densification trigger, render / training iteration,
+// PLY/splat export and checkpointing.
+
+import Foundation
+
+private let C0 = 0.28209479177387814
+private let BLOCK_X = 16
+private let BLOCK_Y = 16
+
+func numShBases(_ degree: Int) -> Int {
+    switch degree {
+    case 0: return 1
+    case 1: return 4
+    case 2: return 9
+    case 3: return 16
+    default: return 25
+    }
+}
+
+final class Model {
+    static let nAdamGroups = 6
+
+    // Active views (first numActive rows of the *_buf backing buffers)
+    var means = MTensor(), scales = MTensor(), quats = MTensor()
+    var featuresDc = MTensor(), featuresRest = MTensor(), opacities = MTensor()
+
+    var adamExpAvg = [MTensor](repeating: MTensor(), count: nAdamGroups)
+    var adamExpAvgSq = [MTensor](repeating: MTensor(), count: nAdamGroups)
+    var adamStepCount = 0
+    var adamLr = [Float](repeating: 0, count: nAdamGroups)
+    let adamBeta1: Float = 0.9, adamBeta2: Float = 0.999, adamEps: Float = 1e-8
+    var meansLrInit: Float = 0, meansLrFinal: Float = 0
+
+    // Backing buffers with headroom for densification
+    var meansBuf = MTensor(), scalesBuf = MTensor(), quatsBuf = MTensor()
+    var featuresDcBuf = MTensor(), featuresRestBuf = MTensor(), opacitiesBuf = MTensor()
+    var adamExpAvgBuf = [MTensor](repeating: MTensor(), count: nAdamGroups)
+    var adamExpAvgSqBuf = [MTensor](repeating: MTensor(), count: nAdamGroups)
+    var numActive = 0, bufCapacity = 0
+
+    // Densification scratch
+    var densifySplitFlag = MTensor(), densifyDupFlag = MTensor()
+    var densifySplitPrefix = MTensor(), densifyDupPrefix = MTensor()
+    var densifyKeepFlag = MTensor(), densifyKeepPrefix = MTensor()
+    var densifyBlockTotals = MTensor()
+    var densifyCompactScratch = MTensor()
+    var densifyRandomSamples = MTensor()
+
+    var radii = MTensor()
+    var lastHeight = 0, lastWidth = 0
+
+    var xysGradNorm = MTensor(), visCounts = MTensor(), max2DSize = MTensor()
+
+    var backgroundColor = MTensor()
+    var window2d = MTensor()  // SSIM window (11, 11)
+
+    let numCameras: Int
+    let numDownscales: Int
+    let resolutionSchedule: Int
+    let shDegree: Int
+    let shDegreeInterval: Int
+    let refineEvery: Int
+    let warmupLength: Int
+    let resetAlphaEvery: Int
+    let stopSplitAt: Int
+    let densifyGradThresh: Float
+    let densifySizeThresh: Float
+    let stopScreenSizeAt: Int
+    let splitScreenSize: Float
+    let maxSteps: Int
+    let keepCrs: Bool
+
+    var scale: Float
+    var translation: (Float, Float, Float)
+
+    init(inputData: InputData, numCameras: Int, numDownscales: Int, resolutionSchedule: Int,
+         shDegree: Int, shDegreeInterval: Int, refineEvery: Int, warmupLength: Int,
+         resetAlphaEvery: Int, densifyGradThresh: Float, densifySizeThresh: Float,
+         stopScreenSizeAt: Int, splitScreenSize: Float, maxSteps: Int, keepCrs: Bool,
+         bgColor: (Float, Float, Float)? = nil) {
+        self.numCameras = numCameras
+        self.numDownscales = numDownscales
+        self.resolutionSchedule = resolutionSchedule
+        self.shDegree = shDegree
+        self.shDegreeInterval = shDegreeInterval
+        self.refineEvery = refineEvery
+        self.warmupLength = warmupLength
+        self.resetAlphaEvery = resetAlphaEvery
+        self.stopSplitAt = maxSteps / 2
+        self.densifyGradThresh = densifyGradThresh
+        self.densifySizeThresh = densifySizeThresh
+        self.stopScreenSizeAt = stopScreenSizeAt
+        self.splitScreenSize = splitScreenSize
+        self.maxSteps = maxSteps
+        self.keepCrs = keepCrs
+        scale = inputData.scale
+        translation = inputData.translation
+
+        let n = inputData.points.count
+
+        // Means: xyz straight to GPU
+        means = gpuEmpty([n, 3])
+        means.copyIn(inputData.points.xyz)
+
+        // Scales: log of mean KNN distance, repeated 3x
+        do {
+            let sc = knnScales(xyz: inputData.points.xyz, count: n)
+            scales = gpuEmpty([n, 3])
+            let sp = scales.floats()
+            for i in 0..<n {
+                let v = logf(sc[i])
+                sp[i * 3] = v; sp[i * 3 + 1] = v; sp[i * 3 + 2] = v
+            }
+        }
+
+        // Random unit quaternions (same mt19937(42) stream as C++)
+        do {
+            var rng = MT19937(seed: 42)
+            let dist = UniformRealFloat(0, 1)
+            quats = gpuEmpty([n, 4])
+            let qp = quats.floats()
+            for i in 0..<n {
+                let u = dist.sample(&rng), v = dist.sample(&rng), w = dist.sample(&rng)
+                // C++: std::sqrt(float) * std::sin(double) → double product, stored as float
+                let su = Double((1 - u).squareRoot()), sv = Double(u.squareRoot())
+                qp[i * 4 + 0] = Float(su * sin(2 * Double.pi * Double(v)))
+                qp[i * 4 + 1] = Float(su * cos(2 * Double.pi * Double(v)))
+                qp[i * 4 + 2] = Float(sv * sin(2 * Double.pi * Double(w)))
+                qp[i * 4 + 3] = Float(sv * cos(2 * Double.pi * Double(w)))
+            }
+        }
+
+        // SH: f_dc = rgb2sh(rgb), f_rest = 0
+        let dimSh = numShBases(shDegree)
+        featuresDc = gpuEmpty([n, 3])
+        let dp = featuresDc.floats()
+        for i in 0..<(n * 3) {
+            dp[i] = Float((Double(inputData.points.rgb[i]) / 255.0 - 0.5) / C0)
+        }
+        featuresRest = gpuZeros([n, dimSh - 1, 3])
+
+        // Opacities: logit(0.1)
+        opacities = gpuEmpty([n, 1])
+        let logit01 = logf(Float(0.1) / Float(0.9))
+        let op = opacities.floats()
+        for i in 0..<n { op[i] = logit01 }
+
+        // Background (default magenta: makes under-reconstructed regions obvious)
+        backgroundColor = gpuEmpty([3])
+        let bg = bgColor ?? (0.6130, 0.0101, 0.3984)
+        backgroundColor.copyIn([bg.0, bg.1, bg.2])
+
+        setupOptimizers()
+    }
+
+    private static let lrInit: [Float] = [0.00016, 0.005, 0.001, 0.0025, 0.000125, 0.05]
+
+    private var paramViews: [MTensor] { [means, scales, quats, featuresDc, featuresRest, opacities] }
+
+    /// Oversized zeroed buffer with `param`'s row shape, prefilled with its data.
+    private func allocBuf(_ param: MTensor) -> MTensor {
+        var shape = param.shape
+        shape[0] = bufCapacity
+        let buf = gpuZeros(shape)
+        memcpy(buf.rawPointer, param.rawPointer, param.nbytes)
+        return buf
+    }
+
+    private func allocDensifyScratch(capacity: Int, frStride: Int) {
+        densifySplitFlag = gpuZeros([capacity], .int32)
+        densifyDupFlag = gpuZeros([capacity], .int32)
+        densifySplitPrefix = gpuZeros([capacity], .int32)
+        densifyDupPrefix = gpuZeros([capacity], .int32)
+        densifyKeepFlag = gpuZeros([capacity], .int32)
+        densifyKeepPrefix = gpuZeros([capacity], .int32)
+        densifyBlockTotals = gpuZeros([(capacity + 1023) / 1024], .int32)
+        densifyCompactScratch = gpuZeros([capacity * frStride])
+        densifyRandomSamples = gpuZeros([capacity, 3])
+    }
+
+    func setupOptimizers() {
+        releaseOptimizers()
+
+        numActive = means.size(0)
+        bufCapacity = numActive * 4
+        meansBuf = allocBuf(means)
+        scalesBuf = allocBuf(scales)
+        quatsBuf = allocBuf(quats)
+        featuresDcBuf = allocBuf(featuresDc)
+        featuresRestBuf = allocBuf(featuresRest)
+        opacitiesBuf = allocBuf(opacities)
+
+        let params = paramViews
+        for g in 0..<Model.nAdamGroups {
+            var shape = params[g].shape
+            shape[0] = bufCapacity
+            adamExpAvgBuf[g] = gpuZeros(shape)
+            adamExpAvgSqBuf[g] = gpuZeros(shape)
+            adamLr[g] = Model.lrInit[g]
+        }
+        adamStepCount = 0
+        meansLrInit = 0.00016
+        meansLrFinal = 0.0000016
+
+        allocDensifyScratch(capacity: bufCapacity, frStride: featuresRest.numel / featuresRest.size(0))
+        refreshViews()
+    }
+
+    func releaseOptimizers() {
+        for g in 0..<Model.nAdamGroups {
+            adamExpAvg[g].reset(); adamExpAvgSq[g].reset()
+            adamExpAvgBuf[g].reset(); adamExpAvgSqBuf[g].reset()
+        }
+        meansBuf.reset(); scalesBuf.reset(); quatsBuf.reset()
+        featuresDcBuf.reset(); featuresRestBuf.reset(); opacitiesBuf.reset()
+        densifySplitFlag.reset(); densifyDupFlag.reset()
+        densifySplitPrefix.reset(); densifyDupPrefix.reset()
+        densifyKeepFlag.reset(); densifyKeepPrefix.reset()
+        densifyBlockTotals.reset(); densifyCompactScratch.reset(); densifyRandomSamples.reset()
+    }
+
+    func schedulersStep(_ step: Int) {
+        let t = min(max(Float(step) / Float(maxSteps), 0), 1)
+        adamLr[0] = expf(logf(meansLrInit) * (1 - t) + logf(meansLrFinal) * t)
+    }
+
+    func refreshViews() {
+        means = meansBuf.view(numActive)
+        scales = scalesBuf.view(numActive)
+        quats = quatsBuf.view(numActive)
+        featuresDc = featuresDcBuf.view(numActive)
+        featuresRest = featuresRestBuf.view(numActive)
+        opacities = opacitiesBuf.view(numActive)
+        for g in 0..<Model.nAdamGroups {
+            adamExpAvg[g] = adamExpAvgBuf[g].view(numActive)
+            adamExpAvgSq[g] = adamExpAvgSqBuf[g].view(numActive)
+        }
+    }
+
+    func ensureCapacity(_ needed: Int) {
+        if needed <= bufCapacity { return }
+        let newCap = max(needed, bufCapacity * 2)
+
+        func grow(_ buf: MTensor) -> MTensor {
+            var shape = buf.shape
+            shape[0] = newCap
+            let nb = gpuZeros(shape)
+            memcpy(nb.rawPointer, buf.rawPointer, numActive * buf.stride0 * MemoryLayout<Float>.size)
+            return nb
+        }
+        meansBuf = grow(meansBuf); scalesBuf = grow(scalesBuf); quatsBuf = grow(quatsBuf)
+        featuresDcBuf = grow(featuresDcBuf); featuresRestBuf = grow(featuresRestBuf)
+        opacitiesBuf = grow(opacitiesBuf)
+        for g in 0..<Model.nAdamGroups {
+            adamExpAvgBuf[g] = grow(adamExpAvgBuf[g])
+            adamExpAvgSqBuf[g] = grow(adamExpAvgSqBuf[g])
+        }
+        allocDensifyScratch(capacity: newCap, frStride: featuresRestBuf.stride0)
+        bufCapacity = newCap
+        refreshViews()
+    }
+
+    func getDownscaleFactor(_ step: Int) -> Int {
+        let remaining = numDownscales - step / resolutionSchedule
+        return 1 << max(remaining, 0)
+    }
+
+    func afterTrain(_ step: Int) {
+        guard radii.defined else { return }
+        guard step % refineEvery == 0 && step > warmupLength else { return }
+
+        let resetInterval = resetAlphaEvery * refineEvery
+        let doDensification = step < stopSplitAt && step % resetInterval > numCameras + refineEvery
+
+        if doDensification {
+            let numPointsBefore = numActive
+            ensureCapacity(3 * numActive)  // worst case: every gaussian splits
+
+            // Normal samples for splits (CPU, shared memory), same stream as C++
+            do {
+                var rng = MT19937(seed: UInt32(truncatingIfNeeded: step))
+                var dist = NormalFloat(mean: 0, stddev: 1)
+                let p = densifyRandomSamples.floats()
+                for i in 0..<(2 * numActive * 3) { p[i] = dist.sample(&rng) }
+            }
+
+            let checkHuge = step > refineEvery * resetAlphaEvery
+            let newCount = msplatDensify(DensifyParams(
+                n: numActive, bufCapacity: bufCapacity,
+                gradThresh: densifyGradThresh, sizeThresh: densifySizeThresh,
+                screenThresh: splitScreenSize,
+                checkScreen: step < stopScreenSizeAt ? 1 : 0,
+                cullAlphaThresh: 0.1, cullScaleThresh: 0.5, cullScreenSize: 0.15,
+                checkHuge: checkHuge ? 1 : 0,
+                xysGradNorm: xysGradNorm, visCounts: visCounts, max2dSize: max2DSize,
+                halfMaxDim: 0.5 * Float(max(lastWidth, lastHeight)),
+                meansBuf: meansBuf, scalesBuf: scalesBuf, quatsBuf: quatsBuf,
+                featuresDcBuf: featuresDcBuf, featuresRestBuf: featuresRestBuf,
+                opacitiesBuf: opacitiesBuf, frStride: featuresRestBuf.stride0,
+                adamExpAvgBuf: adamExpAvgBuf, adamExpAvgSqBuf: adamExpAvgSqBuf,
+                splitFlag: densifySplitFlag, dupFlag: densifyDupFlag,
+                splitPrefix: densifySplitPrefix, dupPrefix: densifyDupPrefix,
+                keepFlag: densifyKeepFlag, keepPrefix: densifyKeepPrefix,
+                blockTotals: densifyBlockTotals, compactScratch: densifyCompactScratch,
+                randomSamples: densifyRandomSamples))
+
+            numActive = newCount
+            refreshViews()
+            print("Densified: \(numPointsBefore) -> \(numActive) gaussians")
+        }
+
+        if step < stopSplitAt && step % resetInterval == refineEvery {
+            msplatGpuSync()
+            let resetLogit: Float = -1.3862943611198906
+            let op = opacities.floats()
+            for i in 0..<opacities.numel where op[i] > resetLogit { op[i] = resetLogit }
+            adamExpAvg[5].zero()
+            adamExpAvgSq[5].zero()
+            logErr("Opacity reset at step \(step)")
+        }
+
+        xysGradNorm.reset()
+        visCounts.reset()
+        max2DSize.reset()
+    }
+
+    // MARK: Export
+
+    private var gaussianParams: GaussianParams {
+        GaussianParams(means: means, scales: scales, quats: quats, featuresDc: featuresDc,
+                       featuresRest: featuresRest, opacities: opacities,
+                       scale: scale, translation: translation, keepCrs: keepCrs)
+    }
+
+    func save(_ filename: String, step: Int) throws {
+        if (filename as NSString).pathExtension == "splat" { try saveSplat(filename) }
+        else { try savePly(filename, step: step) }
+        logErr("Saved \(filename)")
+    }
+
+    func savePly(_ filename: String, step: Int) throws {
+        try saveGaussianPly(filename, gaussianParams, step: step)
+    }
+
+    func saveSplat(_ filename: String) throws {
+        try saveGaussianSplat(filename, gaussianParams)
+    }
+
+    func loadPly(_ filename: String) throws -> Int {
+        let g = try loadGaussianPly(filename, scale: scale, translation: translation, keepCrs: keepCrs)
+        means = g.means; scales = g.scales; quats = g.quats
+        featuresDc = g.featuresDc; featuresRest = g.featuresRest; opacities = g.opacities
+        setupOptimizers()
+        return g.step
+    }
+
+    // MARK: Checkpoints
+
+    private static let ckptMagic: UInt32 = 0x4C50_534D  // "MSPL"
+    private static let ckptVersion: UInt32 = 1
+
+    private static func append<T: FixedWidthInteger>(_ d: inout Data, _ v: T) {
+        withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) }
+    }
+    private static func append(_ d: inout Data, _ v: Float) { append(&d, v.bitPattern) }
+
+    private static func writeTensor(_ d: inout Data, _ t: MTensor) {
+        append(&d, UInt32(t.ndim))
+        for i in 0..<t.ndim { append(&d, Int64(t.size(i))) }
+        append(&d, UInt64(t.nbytes))
+        d.append(contentsOf: UnsafeRawBufferPointer(start: t.rawPointer, count: t.nbytes))
+    }
+
+    private static func readTensor(_ r: inout BinaryReader) throws -> MTensor {
+        let ndim = Int(try r.read(UInt32.self))
+        var shape: [Int] = []
+        for _ in 0..<ndim { shape.append(Int(try r.read(Int64.self))) }
+        let bytes = Int(try r.read(UInt64.self))
+        let t = gpuEmpty(shape, .float32)
+        guard r.remaining >= bytes, bytes <= t.nbytes else { throw MsplatError("Checkpoint truncated") }
+        r.data.withUnsafeBytes { raw in
+            memcpy(t.rawPointer, raw.baseAddress!.advanced(by: r.offset), bytes)
+        }
+        try r.skip(bytes)
+        return t
+    }
+
+    func saveCheckpoint(_ filename: String, step: Int) throws {
+        msplatGpuSync()
+
+        var d = Data()
+        Model.append(&d, Model.ckptMagic)
+        Model.append(&d, Model.ckptVersion)
+        Model.append(&d, UInt32(step))
+        Model.append(&d, UInt32(numActive))
+        Model.append(&d, UInt32(shDegree))
+        Model.append(&d, UInt32(adamStepCount))
+        for lr in adamLr { Model.append(&d, lr) }
+        Model.append(&d, meansLrInit)
+        Model.append(&d, meansLrFinal)
+
+        for t in paramViews { Model.writeTensor(&d, t) }
+        for g in 0..<Model.nAdamGroups { Model.writeTensor(&d, adamExpAvg[g]) }
+        for g in 0..<Model.nAdamGroups { Model.writeTensor(&d, adamExpAvgSq[g]) }
+
+        do { try d.write(to: URL(fileURLWithPath: filename)) }
+        catch { throw MsplatError("Cannot open checkpoint file for writing: \(filename)") }
+        print("Checkpoint saved: \(filename) (step \(step), \(numActive) gaussians, \(d.count / (1024 * 1024)) MB)")
+    }
+
+    func loadCheckpoint(_ filename: String) throws -> Int {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: filename)) else {
+            throw MsplatError("Cannot open checkpoint file: \(filename)")
+        }
+        var r = BinaryReader(data)
+        let magic = try r.read(UInt32.self)
+        let version = try r.read(UInt32.self)
+        if magic != Model.ckptMagic { throw MsplatError("Not a valid msplat checkpoint file") }
+        if version != Model.ckptVersion { throw MsplatError("Unsupported checkpoint version: \(version)") }
+
+        let step = Int(try r.read(UInt32.self))
+        let numPts = Int(try r.read(UInt32.self))
+        _ = try r.read(UInt32.self) // shDegree (informational)
+        let adamSteps = Int(try r.read(UInt32.self))
+        for g in 0..<Model.nAdamGroups { adamLr[g] = try r.readF32() }
+        meansLrInit = try r.readF32()
+        meansLrFinal = try r.readF32()
+        adamStepCount = adamSteps
+
+        means = try Model.readTensor(&r)
+        scales = try Model.readTensor(&r)
+        quats = try Model.readTensor(&r)
+        featuresDc = try Model.readTensor(&r)
+        featuresRest = try Model.readTensor(&r)
+        opacities = try Model.readTensor(&r)
+        for g in 0..<Model.nAdamGroups { adamExpAvg[g] = try Model.readTensor(&r) }
+        for g in 0..<Model.nAdamGroups { adamExpAvgSq[g] = try Model.readTensor(&r) }
+
+        // Rebuild backing buffers (not setupOptimizers — that would zero the loaded state)
+        numActive = numPts
+        bufCapacity = numActive * 4
+        meansBuf = allocBuf(means)
+        scalesBuf = allocBuf(scales)
+        quatsBuf = allocBuf(quats)
+        featuresDcBuf = allocBuf(featuresDc)
+        featuresRestBuf = allocBuf(featuresRest)
+        opacitiesBuf = allocBuf(opacities)
+        for g in 0..<Model.nAdamGroups {
+            adamExpAvgBuf[g] = allocBuf(adamExpAvg[g])
+            adamExpAvgSqBuf[g] = allocBuf(adamExpAvgSq[g])
+        }
+        allocDensifyScratch(capacity: bufCapacity, frStride: featuresRest.numel / featuresRest.size(0))
+        refreshViews()
+
+        print("Checkpoint loaded: \(filename) (step \(step), \(numActive) gaussians)")
+        return step
+    }
+
+    // MARK: Per-view setup, render, training iteration
+
+    struct CamSetup {
+        var fx: Float, fy: Float, cx: Float, cy: Float
+        var height: Int, width: Int, degree: Int, degreesToUse: Int
+        var tileBounds: (Int, Int, Int)
+        var camPos: (Float, Float, Float)
+    }
+
+    func prepareCam(_ cam: Camera, step: Int) -> CamSetup {
+        let sf = Float(getDownscaleFactor(step))
+        let fx = cam.fx / sf, fy = cam.fy / sf, cx = cam.cx / sf, cy = cam.cy / sf
+        let height = Int(Float(cam.height) / sf)
+        let width = Int(Float(cam.width) / sf)
+
+        let fovX = 2.0 * atanf(Float(width) / (2.0 * fx))
+        let fovY = 2.0 * atanf(Float(height) / (2.0 * fy))
+
+        if !cam.cachedViewMat.defined || cam.cachedFovX != fovX || cam.cachedFovY != fovY {
+            let d = cam.camToWorld
+            var R = [[Float]](repeating: [0, 0, 0], count: 3)
+            var T: [Float] = [0, 0, 0]
+            for i in 0..<3 {
+                R[i][0] = d[i * 4 + 0]; R[i][1] = -d[i * 4 + 1]; R[i][2] = -d[i * 4 + 2]; T[i] = d[i * 4 + 3]
+            }
+            var Rinv = [[Float]](repeating: [0, 0, 0], count: 3)
+            for i in 0..<3 { for j in 0..<3 { Rinv[i][j] = R[j][i] } }
+            var Tinv: [Float] = [0, 0, 0]
+            for i in 0..<3 { Tinv[i] = -(Rinv[i][0] * T[0] + Rinv[i][1] * T[1] + Rinv[i][2] * T[2]) }
+            let vm: [Float] = [
+                Rinv[0][0], Rinv[0][1], Rinv[0][2], Tinv[0],
+                Rinv[1][0], Rinv[1][1], Rinv[1][2], Tinv[1],
+                Rinv[2][0], Rinv[2][1], Rinv[2][2], Tinv[2],
+                0, 0, 0, 1,
+            ]
+            let tP = 0.001 * tanf(0.5 * fovY), rP = 0.001 * tanf(0.5 * fovX)
+            let zf: Float = 1000.0, zn: Float = 0.001
+            let pm: [Float] = [
+                zn / rP, 0, 0, 0,
+                0, zn / tP, 0, 0,
+                0, 0, (zf + zn) / (zf - zn), -zf * zn / (zf - zn),
+                0, 0, 1, 0,
+            ]
+            var pvm = [Float](repeating: 0, count: 16)
+            for i in 0..<4 { for j in 0..<4 { for k in 0..<4 { pvm[i * 4 + j] += pm[i * 4 + k] * vm[k * 4 + j] } } }
+
+            cam.cachedViewMat = gpuEmpty([4, 4])
+            cam.cachedViewMat.copyIn(vm)
+            cam.cachedProjViewMat = gpuEmpty([4, 4])
+            cam.cachedProjViewMat.copyIn(pvm)
+            cam.cachedCamPos = (T[0], T[1], T[2])
+            cam.cachedFovX = fovX; cam.cachedFovY = fovY
+        }
+
+        let b = featuresRest.size(-2) + 1
+        let degree = b <= 1 ? 0 : b <= 4 ? 1 : b <= 9 ? 2 : b <= 16 ? 3 : 4
+        return CamSetup(
+            fx: fx, fy: fy, cx: cx, cy: cy, height: height, width: width,
+            degree: degree, degreesToUse: min(step / shDegreeInterval, shDegree),
+            tileBounds: ((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1),
+            camPos: cam.cachedCamPos)
+    }
+
+    private func renderParams(_ cam: Camera, _ s: CamSetup) -> RenderParams {
+        RenderParams(
+            numPoints: means.size(0), means3d: means, scales: scales, globScale: 1.0,
+            quats: quats, viewmat: cam.cachedViewMat, projmat: cam.cachedProjViewMat,
+            fx: s.fx, fy: s.fy, cx: s.cx, cy: s.cy,
+            imgHeight: UInt32(s.height), imgWidth: UInt32(s.width),
+            tileBounds: s.tileBounds, clipThresh: 0.01,
+            degree: UInt32(s.degree), degreesToUse: UInt32(s.degreesToUse), camPos: s.camPos,
+            featuresDc: featuresDc, featuresRest: featuresRest,
+            opacities: opacities, background: backgroundColor)
+    }
+
+    func render(_ cam: Camera, step: Int) -> MTensor {
+        let s = prepareCam(cam, step: step)
+        return msplatRender(renderParams(cam, s))
+    }
+
+    func fullIteration(_ cam: Camera, step: Int, gt: MTensor, ssimWeight: Float) {
+        let s = prepareCam(cam, step: step)
+        lastHeight = s.height; lastWidth = s.width
+        let numPoints = means.size(0)
+
+        if !window2d.defined {
+            window2d = gpuEmpty([11, 11])
+            window2d.copyIn(createSSIMWindow(windowSize: 11, sigma: 1.5))
+        }
+
+        adamStepCount += 1
+        // C++ std::pow(float, int) promotes to double; mirror that for identical rounding.
+        let bc1 = Float(1.0 - pow(Double(adamBeta1), Double(adamStepCount)))
+        let bc2 = Float(1.0 - pow(Double(adamBeta2), Double(adamStepCount)))
+        let stepSizes = adamLr.map { $0 / bc1 }
+        let bc2Sqrts = [Float](repeating: bc2.squareRoot(), count: Model.nAdamGroups)
+
+        if !xysGradNorm.defined {
+            xysGradNorm = gpuZeros([numPoints])
+            visCounts = gpuZeros([numPoints])
+            max2DSize = gpuZeros([numPoints])
+        }
+
+        let invMaxDim = 1.0 / Float(max(lastHeight, lastWidth))
+        let lossInvN = 1.0 / Float(s.height * s.width * 3)
+
+        let (r, _) = msplatTrainStep(renderParams(cam, s), TrainParams(
+            gt: gt, window2d: window2d, ssimWeight: ssimWeight,
+            lossInvN: lossInvN, featuresRestBases: featuresRest.size(-2),
+            adamParams: paramViews, adamExpAvg: adamExpAvg, adamExpAvgSq: adamExpAvgSq,
+            adamStepSizes: stepSizes, adamBc2Sqrts: bc2Sqrts,
+            adamBeta1: adamBeta1, adamBeta2: adamBeta2, adamEps: adamEps,
+            visCounts: visCounts, xysGradNorm: xysGradNorm, max2dSize: max2DSize,
+            invMaxDim: invMaxDim))
+        radii = r
+    }
+}

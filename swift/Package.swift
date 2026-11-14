@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "Msplat", targets: ["Msplat"]),
     ],
     dependencies: [
-        .package(path: "../core"),
+        .package(path: "../coreswift"),
     ],
     targets: [
 
@@ -16,7 +16,7 @@ let package = Package(
         .target(
             name: "Msplat",
             dependencies: [
-                .product(name: "MsplatCore", package: "core")
+                .product(name: "MsplatCore", package: "coreswift")
             ],
             path: "Sources/Msplat",
             resources: [.copy("Resources/default.metallib")],
