@@ -43,37 +43,95 @@ extension CGImage {
         
         return (data: pixels, width: w, height: h)
     }
+	
+	func exportRGBAFloat() -> (data: [Float], width: Int, height: Int) {
+		let w = width
+		let h = height
+		
+		// Create RGBA buffer
+		var rgba = [UInt8](repeating: 0, count: w * h * 4)
+		let colorSpace = CGColorSpaceCreateDeviceRGB()
+		
+		rgba.withUnsafeMutableBytes { buf in
+			let context = CGContext(
+				data: buf.baseAddress,
+				width: w,
+				height: h,
+				bitsPerComponent: 8,
+				bytesPerRow: w * 4,
+				space: colorSpace,
+				bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+			)!
+			context.draw(self, in: CGRect(x: 0, y: 0, width: w, height: h))
+		}
+		
+		// Convert to RGB float [0, 1]
+		var pixels = [Float](repeating: 0, count: w * h * 4)
+		for i in 0..<(w * h) {
+			pixels[i * 4 + 0] = Float(rgba[i * 4 + 0]) / 255.0
+			pixels[i * 4 + 1] = Float(rgba[i * 4 + 1]) / 255.0
+			pixels[i * 4 + 2] = Float(rgba[i * 4 + 2]) / 255.0
+			pixels[i * 4 + 3] = Float(rgba[i * 4 + 3]) / 255.0
+		}
+		
+		return (data: pixels, width: w, height: h)
+	}
     
     /// Export as RGBImage structure.
     /// - Returns: An RGBImage with float RGB values in [0, 1]
     /// - Throws: If the image dimensions are invalid
-    func exportRGBImage() throws -> RGBImage {
+    func exportRGBImage() throws -> RGBImage 
+	{
         let (data, width, height) = exportRGBFloat()
-        return try RGBImage(data: data, width: width, height: height)
+		return try RGBImage(data: data, width: width, height: height, format: .rgb)
     }
+	
+	func exportRGBAImage() throws -> RGBImage 
+	{
+		let (data, width, height) = exportRGBAFloat()
+		return try RGBImage(data: data, width: width, height: height, format: .rgba)
+	}
 }
 
 /// Float32 RGB image, HWC, values in [0, 1].
-public struct RGBImage {
-    var data: [Float]
-    var width: Int
-    var height: Int
+public struct RGBImage 
+{
+	public enum ImageFormat
+	{
+		case rgb
+		case rgba
+		
+		var channels : Int
+		{
+			switch self
+			{
+				case .rgb:	3
+				case .rgba:	4
+			}
+		}
+	}
+    public var data: [Float]
+	public var width: Int
+	public var height: Int
+	public var format : ImageFormat
+	public var channels : Int		{	format.channels	}
     
-    init(data: [Float], width: Int, height: Int) throws {
+	public init(data: [Float], width: Int, height: Int,format:ImageFormat) throws {
         guard width > 0 && height > 0 else {
             throw MsplatError("RGBImage dimensions must be positive: \(width)x\(height)")
         }
-        let expectedSize = width * height * 3
+		let expectedSize = width * height * format.channels
         guard data.count == expectedSize else {
             throw MsplatError("RGBImage data size mismatch: expected \(expectedSize) (3×\(width)×\(height)), got \(data.count)")
         }
         self.data = data
         self.width = width
         self.height = height
+		self.format = format
     }
     
     /// Load an RGB image from a file URL
-    init(contentsOf url: URL) throws 
+	public init(contentsOf url: URL) throws 
 	{
 		guard let cg = CGImage.load(contentsOf: url) else
 		{
@@ -81,17 +139,19 @@ public struct RGBImage {
         }
 		let rgb = cg.exportRGBFloat()
 
-		try self.init(data: rgb.data, width: rgb.width, height: rgb.height)
+		try self.init(data: rgb.data, width: rgb.width, height: rgb.height, format: .rgb)
     }
 }
 
 /// Area-based (box filter) resize.
-func resizeArea(_ src: RGBImage, _ dstW: Int, _ dstH: Int) -> RGBImage {
-    let pixels = [Float](repeating: 0, count: dstW * dstH * 3)
-    var dst = try! RGBImage(data: pixels, width: dstW, height: dstH)
+func resizeArea(_ src: RGBImage, _ dstW: Int, _ dstH: Int) -> RGBImage 
+{
+	let pixels = [Float](repeating: 0, count: dstW * dstH * src.channels)
+	var dst = try! RGBImage(data: pixels, width: dstW, height: dstH, format: src.format)
     let scaleX = Float(src.width) / Float(dstW)
     let scaleY = Float(src.height) / Float(dstH)
 
+	let outputFormat = src.format
     src.data.withUnsafeBufferPointer { s in
         dst.data.withUnsafeMutableBufferPointer { d in
             for dy in 0..<dstH {
@@ -115,7 +175,7 @@ func resizeArea(_ src: RGBImage, _ dstW: Int, _ dstH: Int) -> RGBImage {
                                 for ix in ix0..<ix1 {
                                     let wx = min(Float(ix + 1), srcX1) - max(Float(ix), srcX0)
                                     let area = wx * wy
-                                    let o = (iy * src.width + ix) * 3
+                                    let o = (iy * src.width + ix) * outputFormat.channels
                                     s0 += s[o] * area
                                     s1 += s[o + 1] * area
                                     s2 += s[o + 2] * area
@@ -124,7 +184,7 @@ func resizeArea(_ src: RGBImage, _ dstW: Int, _ dstH: Int) -> RGBImage {
                             }
                         }
                     }
-                    let o = (dy * dstW + dx) * 3
+					let o = (dy * dstW + dx) * outputFormat.channels
                     let inv = 1.0 / totalArea
                     d[o] = s0 * inv
                     d[o + 1] = s1 * inv
@@ -225,8 +285,9 @@ func undistortImage(_ src: RGBImage, fx: Float, fy: Float, cx: Float, cy: Float,
 
     // For each output pixel, forward-distort to find the source pixel. Only the ROI
     // is kept, so only the ROI is computed (same result as computing then cropping).
-    let pixels = [Float](repeating: 0, count: roiW * roiH * 3)
-    var cropped = try! RGBImage(data: pixels, width: roiW, height: roiH)
+	let format = RGBImage.ImageFormat.rgb
+	let pixels = [Float](repeating: 0, count: roiW * roiH * format.channels)
+	var cropped = try! RGBImage(data: pixels, width: roiW, height: roiH, format: format)
     src.data.withUnsafeBufferPointer { s in
         cropped.data.withUnsafeMutableBufferPointer { d in
             for y in 0..<roiH {
@@ -234,7 +295,7 @@ func undistortImage(_ src: RGBImage, fx: Float, fy: Float, cx: Float, cy: Float,
                 for x in 0..<roiW {
                     let ox = x + roiX
                     let (xd, yd) = distortPoint((Float(ox) - cx) / fx, (Float(oy) - cy) / fy, k1, k2, p1, p2, k3)
-                    bilinearSample(s, w, h, xd * fx + cx, yd * fy + cy, d, (y * roiW + x) * 3)
+                    bilinearSample(s, w, h, xd * fx + cx, yd * fy + cy, d, (y * roiW + x) * format.channels)
                 }
             }
         }

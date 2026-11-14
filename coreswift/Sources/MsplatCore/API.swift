@@ -43,12 +43,6 @@ public struct MsplatEvalMetrics {
     public init() {}
 }
 
-/// Rendered RGB float32 image, HWC.
-public struct SplatImage {
-    public var pixels: [Float]
-    public var width: Int
-    public var height: Int
-}
 
 // MARK: - Runtime / lifecycle
 
@@ -221,18 +215,19 @@ public final class SplatTrainer {
         return MsplatEvalMetrics()
     }
 
-    private func renderToImage(_ cam: RuntimeCamera) -> SplatImage {
+    private func renderToImage(_ cam: RuntimeCamera) throws -> RGBImage {
         let rgb = model.render(cam, step: currentStep)
         msplatGpuSync()
         let h = rgb.size(0), w = rgb.size(1)
-        let pixels = Array(UnsafeBufferPointer(start: rgb.floats(), count: h * w * 3))
-        return SplatImage(pixels: pixels, width: w, height: h)
+		let format = RGBImage.ImageFormat.rgb
+		let pixels = Array(UnsafeBufferPointer(start: rgb.floats(), count: h * w * format.channels))
+        return try RGBImage(data: pixels, width: w, height: h, format: format)
     }
 
     /// Render a camera view. Nil if the index is out of range.
-    public func render(cameraIndex: Int) -> SplatImage? {
+    public func render(cameraIndex: Int) throws -> RGBImage? {
         guard dataset.cameras.indices.contains(cameraIndex) else { return nil }
-        return renderToImage(dataset.cameras[cameraIndex])
+        return try renderToImage(dataset.cameras[cameraIndex])
     }
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
@@ -257,9 +252,9 @@ public final class SplatTrainer {
 
     /// Render from an arbitrary camera-to-world pose (4x4 row-major, OpenGL convention),
     /// using the intrinsics of a reference training camera.
-    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0) throws -> SplatImage? {
+    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0) throws -> RGBImage? {
         guard let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex) else { return nil }
-        return renderToImage(cam)
+        return try renderToImage(cam)
     }
 
     /// Render from pose straight into a caller-provided RGBA8 buffer (≥ w*h*4 bytes).

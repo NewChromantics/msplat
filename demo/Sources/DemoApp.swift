@@ -8,11 +8,11 @@ import QuartzCore
 nonisolated(unsafe) var displayReady: Int32 = 1
 
 /// Convert SplatImage (RGB float32) to NSImage (RGBA uint8).
-func splatImageToNSImage(_ img: SplatImage) -> NSImage {
+func splatImageToNSImage(_ img: RGBImage) -> NSImage {
     let w = img.width, h = img.height
     let n = w * h
     let rgba = UnsafeMutablePointer<UInt8>.allocate(capacity: n * 4)
-    img.pixels.withUnsafeBufferPointer { src in
+    img.data.withUnsafeBufferPointer { src in
         for i in 0..<n {
             rgba[i * 4]     = UInt8(min(max(src[i * 3], 0), 1) * 255)
             rgba[i * 4 + 1] = UInt8(min(max(src[i * 3 + 1], 0), 1) * 255)
@@ -221,7 +221,8 @@ final class Engine
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 
-				if let splatImg = trainer.render(cameraIndex: 0) {
+				if let splatImg = try trainer.render(cameraIndex: 0) 
+				{
 					let img = splatImageToNSImage(splatImg)
 					let iter = Int(stats.iteration)
 					let count = Int(stats.splatCount)
