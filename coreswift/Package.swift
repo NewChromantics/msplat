@@ -9,9 +9,11 @@ let package = Package(
     products: [
         .library(name: "MsplatCore", targets: ["MsplatCore"]),
     ],
+	dependencies: [ .package(name: "NerfStudioData", path: "../NerfStudioData.SwiftPackage")],
     targets: [
         .target(
             name: "MsplatCore",
+            dependencies: ["NerfStudioData"],
             path: "Sources/MsplatCore",
             resources: [
                 // Copied, not processed: compiled at runtime unless a precompiled

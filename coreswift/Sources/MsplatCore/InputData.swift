@@ -11,13 +11,14 @@ public enum ImageSource {
 
 /// Camera metadata: fixed data loaded from dataset (intrinsics, pose, dimensions).
 /// Value type for camera parameters.
-public struct CameraMeta {
-    var width = 0, height = 0
-    var fx: Float = 0, fy: Float = 0, cx: Float = 0, cy: Float = 0
-    var k1: Float = 0, k2: Float = 0, k3: Float = 0, p1: Float = 0, p2: Float = 0
+public struct CameraMeta 
+{
+    public var width = 0, height = 0
+	public var fx: Float = 0, fy: Float = 0, cx: Float = 0, cy: Float = 0
+	public var k1: Float = 0, k2: Float = 0, k3: Float = 0, p1: Float = 0, p2: Float = 0
     /// 4x4 row-major camera-to-world (OpenGL: Y-up, Z-back).
-    var camToWorld = [Float](repeating: 0, count: 16)
-    var imageSource: ImageSource
+	public var camToWorld = [Float](repeating: 0, count: 16)
+	public var imageSource: ImageSource
     
     public init(imageSource: ImageSource) {
         self.imageSource = imageSource

@@ -9,6 +9,7 @@
 // Not thread-safe (same contract as the C++): drive one trainer from one thread.
 
 import Foundation
+import NerfStudioData
 
 // MARK: - Value types (field names/types match msplat_c_api.h)
 
@@ -82,26 +83,59 @@ public protocol SplatDatasetSource {
     func load() async throws -> InputData
 }
 
-// MARK: - Dataset Source Implementations
+// MARK: - NerfStudio Dataset Source Adapter
 
-/// Nerfstudio dataset source (transforms.json format)
-public final class NerfstudioDatasetSource: SplatDatasetSource {
-    private let url: URL
-    
-    public init(url: URL) {
-        self.url = url
-    }
-    
-    /// Load InputData from a Nerfstudio dataset (transforms.json format)
-    /// - Parameter path: Path to the dataset directory
-    /// - Returns: Loaded InputData with cameras and optional point cloud
-    static func loadInputData(from path: String) throws -> InputData {
-        return try loadNerfstudio(path)
-    }
-    
+/// Adapter to convert NerfStudioData package types to MsplatCore InputData
+extension NerfstudioDatasetSource: SplatDatasetSource {
     public func load() async throws -> InputData {
-        let input = try Self.loadInputData(from: url.path)
-        return input
+        // Load the dataset using the NerfStudioData package
+        let nerfDataset = try await loadDataset()
+        
+        // Convert to InputData
+        return try convertToInputData(nerfDataset)
+    }
+    
+    /// Convert NerfStudioDataset to MsplatCore's InputData format
+    private func convertToInputData(_ nerfDataset: NerfStudioDataset) throws -> InputData {
+        let inputData = InputData()
+        
+        // Convert cameras
+        for nerfCamera in nerfDataset.cameras {
+            var cameraMeta = CameraMeta(imageSource: .url(
+                nerfDataset.baseDirectory.appendingPathComponent(nerfCamera.imagePath)
+            ))
+            
+            cameraMeta.width = nerfCamera.width
+            cameraMeta.height = nerfCamera.height
+            cameraMeta.fx = nerfCamera.fx
+            cameraMeta.fy = nerfCamera.fy
+            cameraMeta.cx = nerfCamera.cx
+            cameraMeta.cy = nerfCamera.cy
+            
+            // Map distortion parameters (NerfStudio uses k1-k4, p1-p2; we use k1-k3, p1-p2)
+            cameraMeta.k1 = nerfCamera.k1
+            cameraMeta.k2 = nerfCamera.k2
+            cameraMeta.k3 = nerfCamera.k3  // k4 is ignored - not supported by our distortion model
+            cameraMeta.p1 = nerfCamera.p1
+            cameraMeta.p2 = nerfCamera.p2
+            
+            // Copy transform matrix (already in OpenGL convention)
+            cameraMeta.camToWorld = nerfCamera.transformMatrix
+            
+            inputData.cameras.append(cameraMeta)
+        }
+        
+        // Convert point cloud if present
+        if let pointCloud = nerfDataset.pointCloud {
+            inputData.points.xyz = pointCloud.positions
+            inputData.points.rgb = pointCloud.colors
+            inputData.points.count = pointCloud.count
+        }
+        
+        // Apply scale from the dataset
+        inputData.scale = nerfDataset.appliedScale
+        
+        return inputData
     }
 }
 

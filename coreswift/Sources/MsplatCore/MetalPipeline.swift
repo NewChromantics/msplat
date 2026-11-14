@@ -19,13 +19,16 @@ private let BWD_CHUNK_SIZE: UInt32 = 512
 extension MTLComputeCommandEncoder {
     @inline(__always)
     func setScalar<T>(_ v: T, _ index: Int) {
-        var v = v
-        setBytes(&v, length: MemoryLayout<T>.size, index: index)
+        withUnsafeBytes(of: v) { bytes in
+            setBytes(bytes.baseAddress!, length: bytes.count, index: index)
+        }
     }
 
     @inline(__always)
     func setArray<T>(_ a: [T], _ index: Int) {
-        a.withUnsafeBytes { setBytes($0.baseAddress!, length: $0.count, index: index) }
+        a.withUnsafeBufferPointer { buffer in
+            setBytes(buffer.baseAddress!, length: MemoryLayout<T>.stride * buffer.count, index: index)
+        }
     }
 
     @inline(__always)
