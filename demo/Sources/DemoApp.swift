@@ -113,6 +113,7 @@ final class Engine
 	var totalIterations: Int = 10_000
 	var splatCount: Int = 0
 	var msPerStep: Float = 0
+	var elapsedSecs : Float = 0
 	var fps: Float = 0
 	var phase : Phase
 	var task : Task<Void,Never>!
@@ -180,15 +181,17 @@ final class Engine
 		let trainer = try SplatTrainer(dataset: inputData, config: config)
 
 		// Phase 1: Training
-		var batchStart = CACurrentMediaTime()
 		var batchSteps = 0
+		let startTime = CACurrentMediaTime()
+		var batchStart = startTime
 
 		for i in 0..<config.iterations 
 		{
 			let stats = trainer.step()
 			batchSteps += 1
 
-			if i % 25 == 0 || i == config.iterations-1 {
+			if i % 30 == 0 || i == config.iterations-1
+			{
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 
@@ -200,12 +203,14 @@ final class Engine
 					let cgImage = try splatImg.makeCGImage(useFloatComponents: true)
 					let iter = Int(stats.iteration)
 					let count = Int(stats.splatCount)
+					let elapsedSecs = batchEnd - startTime
 					await MainActor.run 
 					{
 						self.image = cgImage
 						self.iteration = iter
 						self.splatCount = count
 						self.msPerStep = avgMs
+						self.elapsedSecs = Float(elapsedSecs)
 					}
 				}
 				catch
@@ -367,6 +372,7 @@ struct ContentView: View
                 Text("step \(engine.iteration) / \(engine.totalIterations)")
                 Text("\(fmtCount(engine.splatCount)) splats")
                 Text(String(format: "%.1f ms/step", engine.msPerStep))
+					Text("Elapsed \(Int(engine.elapsedSecs))secs")
             case .orbiting:
                 Text("\(fmtCount(engine.splatCount)) splats")
                 Text(String(format: "%.0f fps", engine.fps))

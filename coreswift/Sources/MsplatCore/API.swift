@@ -146,7 +146,8 @@ public final class SplatTrainer {
 
     private var camIndices: [Int]
     private var camIterPos = 0
-    private var rng = MT19937(seed: 42)
+	private var rng = MT19937(seed: 42)
+		//private var rng = Xoshiro256PlusPlus(seed: 42)
 
     public init(dataset: SplatInputData, config: MsplatConfig = MsplatConfig()) throws {
         _ = try MetalContext.shared()
@@ -167,7 +168,7 @@ public final class SplatTrainer {
     }
 
     private func shuffleCameras() {
-        shuffleLibcxx(&camIndices, &rng)
+        shuffle(&camIndices, &rng)
         camIterPos = 0
     }
 
