@@ -122,7 +122,9 @@ struct MemorySummary: Sendable {
 @Observable
 final class Engine
 {
-	var image: CGImage?		//	NSImage not threadsafe, use CGImage
+	//	last Nth step render
+	var image: CGImage?
+	
 	var iteration: Int = 0
 	var totalIterations: Int = 10_000
 	var splatCount: Int = 0
@@ -130,7 +132,7 @@ final class Engine
 	var elapsedSecs : Float = 0
 	var fps: Float = 0
 	var phase : Phase
-	var task : Task<Void,Never>!
+	var trainingTask : Task<Void,Never>!
 	let metalContext : MetalContext
 	
 	// Memory tracking
@@ -146,14 +148,14 @@ final class Engine
 	
 	@MainActor deinit
 	{
-		task.cancel()
+		trainingTask.cancel()
 	}
 
 	init(datasetPath: URL) throws
 	{
 		metalContext = try MetalContext()
 		phase = .loading("Init", nil)
-		task = Task.detached 
+		trainingTask = Task.detached 
 		{
 			do
 			{
@@ -197,7 +199,7 @@ final class Engine
 		// Use a dummy context that will never be accessed
 		self.metalContext = try! MetalContext()
 		self.phase = .error(error)
-		self.task = Task { }
+		self.trainingTask = Task { }
 	}
 
 	nonisolated private func performTraining(inputData:SplatInputData, totalIterations: Int) async throws
@@ -223,11 +225,13 @@ final class Engine
 		{
 			let stats = try await trainer.step()
 			batchSteps += 1
-/*
-			await MainActor.run 
-			{
-				self.iteration = Int(i)
-			}*/
+
+			Task.detached {
+				await MainActor.run 
+				{
+					self.iteration = Int(i)
+				}
+			}
 			
 			if i % 30 == 0 || i == config.iterations-1
 			{
@@ -251,14 +255,16 @@ final class Engine
 						cpuImagesMB: trainer.datasetCPUMemoryUsageMB,
 						splatCount: count
 					)
-					await MainActor.run 
-					{
-						self.image = cgImage
-						self.iteration = iter
-						self.splatCount = count
-						self.msPerStep = avgMs
-						self.elapsedSecs = Float(elapsedSecs)
-						self.memory = memory
+					Task.detached {
+						await MainActor.run 
+						{
+							self.image = cgImage
+							self.iteration = iter
+							self.splatCount = count
+							self.msPerStep = avgMs
+							self.elapsedSecs = Float(elapsedSecs)
+							self.memory = memory
+						}
 					}
 				}
 				catch
