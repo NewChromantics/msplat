@@ -24,17 +24,17 @@ struct PackedRGBHalf4 {
 
 
 
-public struct PlySplatPoint : Sendable
+public struct PlySplatPoint : Sendable, Equatable
 {
-	var position : simd_float3
-	var quaternionWxyz : simd_float4
-	var rotation : simd_quatf		{	simd_normalize( simd_quatf(ix: quaternionWxyz.y, iy: quaternionWxyz.z, iz: quaternionWxyz.w, r: quaternionWxyz.x) )	}
-	var scaleLog : simd_float3
-	var scale : simd_float3			{	simd_float3( exp(scaleLog.x), exp(scaleLog.y), exp(scaleLog.z) )	}
-	var opacityLogit : Float
-	var opacity : Float				{	1 / (1 + exp(-opacityLogit))	}
-	var shDc : simd_float3
-	var colour : simd_float3		{	simd_clamp( 0.5 + 0.28209479 * shDc, simd_float3(repeating: 0), simd_float3(repeating: 1) )	}
+	public var position : simd_float3
+	public var quaternionWxyz : simd_float4
+	public var rotation : simd_quatf		{	simd_normalize( simd_quatf(ix: quaternionWxyz.y, iy: quaternionWxyz.z, iz: quaternionWxyz.w, r: quaternionWxyz.x) )	}
+	public var scaleLog : simd_float3
+	public var scale : simd_float3			{	simd_float3( exp(scaleLog.x), exp(scaleLog.y), exp(scaleLog.z) )	}
+	public var opacityLogit : Float
+	public var opacity : Float				{	1 / (1 + exp(-opacityLogit))	}
+	public var shDc : simd_float3
+	public var colour : simd_float3		{	simd_clamp( 0.5 + 0.28209479 * shDc, simd_float3(repeating: 0), simd_float3(repeating: 1) )	}
 }
 
 
