@@ -2,6 +2,7 @@
 // split, auto scale & centre, camera export and the format dispatcher.
 
 import Foundation
+import Metal
 
 /// Image source for camera metadata
 public enum ImageSource 
@@ -147,11 +148,11 @@ public final class RuntimeCamera
         return scaled
     }
 
-    func getGPUImage(downscaleFactor: Int) -> MTensor {
+	func getGPUImage(context: MetalContext, downscaleFactor: Int) throws -> MTensor {
         if let t = gpuImageCache[downscaleFactor] { return t }
         let img = getImage(downscaleFactor: downscaleFactor)
-        let mt = gpuEmpty([img.height, img.width, 3], .float32)
-        mt.copyIn(img.data)
+        let mt = try context.makeEmpty([img.height, img.width, 3], .float32)
+		mt.copyIn(img.data)
         gpuImageCache[downscaleFactor] = mt
         return mt
     }

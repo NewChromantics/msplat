@@ -47,16 +47,9 @@ public struct MsplatEvalMetrics {
 // MARK: - Runtime / lifecycle
 
 public enum MsplatRuntime {
-    /// Use a specific precompiled metallib (call before creating a trainer).
-    public static func setMetallibPath(_ path: String?) { msplatSetMetallibPath(path) }
-    /// Commit pending GPU work and wait for it.
-    public static func sync() { msplatGpuSync() }
-    /// Release cached GPU buffers.
     public static func cleanup() { cleanupMsplatMetal() }
     /// Capture to .gputrace (launch with METAL_CAPTURE_ENABLED=1). Sync on both edges.
-    @discardableResult
-    public static func beginGpuCapture(path: String) -> Bool { msplatBeginGpuCapture(path: path) }
-    public static func endGpuCapture() { msplatEndGpuCapture() }
+    //@discardableResult
     public static func enableGpuTiming(_ enable: Bool) { msplatEnableGpuTiming(enable) }
     public static func drainGpuTimes() -> [Double] { msplatDrainGpuTimes() }
     public static func drainStageTimes() -> [(name: String, timesMs: [Double])] { msplatDrainStageTimes() }
@@ -139,6 +132,7 @@ public enum SplatDatasetLoader {
 // MARK: - Trainer
 
 public final class SplatTrainer {
+    private let context: MetalContext
     private let model: Model
     private let config: MsplatConfig
     private let dataset: SplatInputData   // retained: no dangling dataset as in the C++
@@ -149,11 +143,12 @@ public final class SplatTrainer {
 	private var rng = MT19937(seed: 42)
 		//private var rng = Xoshiro256PlusPlus(seed: 42)
 
-    public init(dataset: SplatInputData, config: MsplatConfig = MsplatConfig()) throws {
-        _ = try MetalContext.shared()
+    public init(context: MetalContext, dataset: SplatInputData, config: MsplatConfig = MsplatConfig()) throws {
+        self.context = context
         self.config = config
         self.dataset = dataset
-        model = Model(
+        model = try Model(
+            metalContext: context,
             inputData: dataset, numCameras: dataset.cameras.count,
             numDownscales: Int(config.numDownscales), resolutionSchedule: Int(config.resolutionSchedule),
             shDegree: Int(config.shDegree), shDegreeInterval: Int(config.shDegreeInterval),
@@ -181,16 +176,19 @@ public final class SplatTrainer {
 
     /// Run one training step.
     @discardableResult
-    public func step() -> MsplatStats {
+    public func step() async throws -> MsplatStats 
+	{
         currentStep += 1
         let cam = dataset.cameras[nextCamera()]
-        let gt = cam.getGPUImage(downscaleFactor: model.getDownscaleFactor(currentStep))
+        let gt = try cam.getGPUImage(context: context, downscaleFactor: model.getDownscaleFactor(currentStep))
 
         let t0 = DispatchTime.now().uptimeNanoseconds
-        model.fullIteration(cam, step: currentStep, gt: gt, ssimWeight: config.ssimWeight)
+        
+        // Execute training iteration and wait for GPU completion
+        try await model.fullIteration(cam, step: currentStep, gt: gt, ssimWeight: config.ssimWeight)
         model.schedulersStep(currentStep)
-        model.afterTrain(currentStep)
-        msplatCommit()
+       try await  model.afterTrain(currentStep)
+        
         let t1 = DispatchTime.now().uptimeNanoseconds
 
         var s = MsplatStats()
@@ -203,9 +201,9 @@ public final class SplatTrainer {
 
     /// Train from the current iteration up to `config.iterations`.
     /// `progress` (optional) is called every `callbackEvery` steps.
-    public func train(callbackEvery: Int = 0, progress: ((MsplatStats) -> Void)? = nil) {
+    public func train(callbackEvery: Int = 0, progress: ((MsplatStats) -> Void)? = nil) async throws {
         while currentStep < Int(config.iterations) {
-            let s = step()
+            let s = try await step()
             if let progress, callbackEvery > 0, currentStep % callbackEvery == 0 { progress(s) }
         }
     }
@@ -216,22 +214,24 @@ public final class SplatTrainer {
         return MsplatEvalMetrics()
     }
 
-	private func renderToImage(_ cam: RuntimeCamera,format:RGBImage.ImageFormat) throws -> RGBImage {
-		let rgb = model.render(cam, step: currentStep, channels: format.channels)
-        msplatGpuSync()
+	private func renderToImage(_ cam: RuntimeCamera, format: RGBImage.ImageFormat) async throws -> RGBImage 
+	{
+        // Render executes its own GPU work and waits for completion
+        let rgb = try await model.render(cam, step: currentStep, channels: format.channels)
+        
         let h = rgb.size(0), w = rgb.size(1)
 		let pixels = Array(UnsafeBufferPointer(start: rgb.floats(), count: h * w * format.channels))
         return try RGBImage(data: pixels, width: w, height: h, format: format)
     }
 
     /// Render a camera view. Nil if the index is out of range.
-    public func render(cameraIndex: Int,format:RGBImage.ImageFormat) throws -> RGBImage
+    public func render(cameraIndex: Int, format: RGBImage.ImageFormat) async throws -> RGBImage
 	{
 		guard dataset.cameras.indices.contains(cameraIndex) else 
 		{
 			throw MsplatError("No such camera \(cameraIndex)/\(dataset.cameras.count)")
 		}
-		return try renderToImage(dataset.cameras[cameraIndex],format:format)
+		return try await renderToImage(dataset.cameras[cameraIndex], format: format)
     }
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
@@ -260,21 +260,23 @@ public final class SplatTrainer {
 
     /// Render from an arbitrary camera-to-world pose (4x4 row-major, OpenGL convention),
     /// using the intrinsics of a reference training camera.
-    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0, format: RGBImage.ImageFormat) throws -> RGBImage? 
+    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0, format: RGBImage.ImageFormat) async throws -> RGBImage? 
 	{
         let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex)
-		return try renderToImage(cam, format:format)
+		return try await renderToImage(cam, format: format)
     }
 
     /// Render from pose straight into a caller-provided RGBA8 buffer (≥ w*h*4 bytes).
     /// Pass nil to just query the output size. Returns (0, 0) for a bad camera index.
     @discardableResult
     public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0,
-                               into rgba: UnsafeMutablePointer<UInt8>?) throws -> (width: Int, height: Int)
+                               into rgba: UnsafeMutablePointer<UInt8>?) async throws -> (width: Int, height: Int)
 	{
         let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex)
-        let rgb = model.render(cam, step: currentStep, channels: 4)
-        msplatGpuSync()
+        
+        // Render executes its own GPU work and waits for completion
+        let rgb = try await model.render(cam, step: currentStep, channels: 4)
+        
         let h = rgb.size(0), w = rgb.size(1)
         guard let out = rgba else { return (w, h) }
         

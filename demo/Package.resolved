@@ -9,6 +9,15 @@
         "branch" : "main",
         "revision" : "108e468d414ad042be150c66570f1ba0307f9131"
       }
+    },
+    {
+      "identity" : "popcommon.swiftpackage",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/NewChromantics/PopCommon.SwiftPackage",
+      "state" : {
+        "branch" : "main",
+        "revision" : "2e12aa648d35a8ff03ca3ed261ead58345b4712f"
+      }
     }
   ],
   "version" : 3

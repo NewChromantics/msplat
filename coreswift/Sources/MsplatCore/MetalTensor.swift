@@ -57,7 +57,12 @@ public struct MTensor {
     init() {}
 
     /// GPU allocation (shared storage). Throws if the device can't allocate.
-    init(device: MTLDevice, shape: [Int], dtype: DType) throws {
+    init(device: MTLDevice, shape: [Int], dtype: DType) throws 
+	{
+		if !shape.allSatisfy({ $0 > 0 })
+		{
+			throw MsplatError("tensor with a 0-width dimension; \(shape)")
+		}
         self.shape = shape
         self.dtype = dtype
         numel = shape.reduce(1, *)

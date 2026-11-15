@@ -119,6 +119,9 @@ final class Model
 {
     static let nAdamGroups = 6
 
+    // Metal context for GPU operations
+    let metalContext: MetalContext
+
     // Active views (first numActive rows of the *_buf backing buffers)
     var means = MTensor(), scales = MTensor(), quats = MTensor()
     var featuresDc = MTensor(), featuresRest = MTensor(), opacities = MTensor()
@@ -175,17 +178,26 @@ final class Model
     deinit {
         releaseOptimizers()
         // Release remaining GPU tensors
-        means.reset(); scales.reset(); quats.reset()
-        featuresDc.reset(); featuresRest.reset(); opacities.reset()
-        backgroundColor.reset(); window2d.reset()
-        radii.reset(); xysGradNorm.reset(); visCounts.reset(); max2DSize.reset()
+        means.reset()
+		scales.reset()
+		quats.reset()
+        featuresDc.reset()
+		featuresRest.reset()
+		opacities.reset()
+        backgroundColor.reset()
+		window2d.reset()
+        radii.reset()
+		xysGradNorm.reset()
+		visCounts.reset()
+		max2DSize.reset()
     }
 
-    init(inputData: SplatInputData, numCameras: Int, numDownscales: Int, resolutionSchedule: Int,
+	init(metalContext: MetalContext, inputData: SplatInputData, numCameras: Int, numDownscales: Int, resolutionSchedule: Int,
          shDegree: Int, shDegreeInterval: Int, refineEvery: Int, warmupLength: Int,
          resetAlphaEvery: Int, densifyGradThresh: Float, densifySizeThresh: Float,
          stopScreenSizeAt: Int, splitScreenSize: Float, maxSteps: Int, keepCrs: Bool,
-         bgColor: (Float, Float, Float)? = nil) {
+         bgColor: (Float, Float, Float)? = nil) throws {
+        self.metalContext = metalContext
         self.numCameras = numCameras
         self.numDownscales = numDownscales
         self.resolutionSchedule = resolutionSchedule
@@ -207,13 +219,13 @@ final class Model
         let n = inputData.points.count
 
         // Means: xyz straight to GPU
-        means = gpuEmpty([n, 3])
+		means = try metalContext.makeEmpty([n, 3])
         means.copyIn(inputData.points.xyz)
 
         // Scales: log of mean KNN distance, repeated 3x
         do {
             let sc = knnScales(xyz: inputData.points.xyz, count: n)
-            scales = gpuEmpty([n, 3])
+			scales = try metalContext.makeEmpty([n, 3])
             let sp = scales.floats()
             for i in 0..<n {
                 let v = logf(sc[i])
@@ -225,7 +237,7 @@ final class Model
         do {
             var rng = MT19937(seed: 42)
             let dist = UniformRealFloat(0, 1)
-            quats = gpuEmpty([n, 4])
+			quats = try metalContext.makeEmpty([n, 4])
             let qp = quats.floats()
             for i in 0..<n {
                 let u = dist.sample(&rng), v = dist.sample(&rng), w = dist.sample(&rng)
@@ -240,21 +252,21 @@ final class Model
 
         // SH: f_dc = rgb2sh(rgb), f_rest = 0
         let dimSh = numShBases(shDegree)
-        featuresDc = gpuEmpty([n, 3])
+		featuresDc = try metalContext.makeEmpty([n, 3])
         let dp = featuresDc.floats()
         for i in 0..<(n * 3) {
             dp[i] = Float((Double(inputData.points.rgb[i]) / 255.0 - 0.5) / C0)
         }
-        featuresRest = gpuZeros([n, dimSh - 1, 3])
+		featuresRest = try metalContext.makeZeros([n, dimSh - 1, 3])
 
         // Opacities: logit(0.1)
-        opacities = gpuEmpty([n, 1])
+		opacities = try metalContext.makeEmpty([n, 1])
         let logit01 = logf(Float(0.1) / Float(0.9))
         let op = opacities.floats()
         for i in 0..<n { op[i] = logit01 }
 
         // Background (default magenta: makes under-reconstructed regions obvious)
-        backgroundColor = gpuEmpty([3])
+		backgroundColor = try metalContext.makeEmpty([3])
         let bg = bgColor ?? (0.6130, 0.0101, 0.3984)
         backgroundColor.copyIn([bg.0, bg.1, bg.2])
 
@@ -266,24 +278,24 @@ final class Model
     private var paramViews: [MTensor] { [means, scales, quats, featuresDc, featuresRest, opacities] }
 
     /// Oversized zeroed buffer with `param`'s row shape, prefilled with its data.
-    private func allocBuf(_ param: MTensor) -> MTensor {
+    private func allocBuf(_ param: MTensor) throws -> MTensor {
         var shape = param.shape
         shape[0] = bufCapacity
-        let buf = gpuZeros(shape)
+        let buf = try metalContext.makeZeros(shape)
         memcpy(buf.rawPointer, param.rawPointer, param.nbytes)
         return buf
     }
 
-    private func allocDensifyScratch(capacity: Int, frStride: Int) {
-        densifySplitFlag = gpuZeros([capacity], .int32)
-        densifyDupFlag = gpuZeros([capacity], .int32)
-        densifySplitPrefix = gpuZeros([capacity], .int32)
-        densifyDupPrefix = gpuZeros([capacity], .int32)
-        densifyKeepFlag = gpuZeros([capacity], .int32)
-        densifyKeepPrefix = gpuZeros([capacity], .int32)
-        densifyBlockTotals = gpuZeros([(capacity + 1023) / 1024], .int32)
-        densifyCompactScratch = gpuZeros([capacity * frStride])
-        densifyRandomSamples = gpuZeros([capacity, 3])
+    private func allocDensifyScratch(capacity: Int, frStride: Int) throws {
+		densifySplitFlag = try metalContext.makeZeros([capacity], .int32)
+		densifyDupFlag = try metalContext.makeZeros([capacity], .int32)
+		densifySplitPrefix = try metalContext.makeZeros([capacity], .int32)
+		densifyDupPrefix = try metalContext.makeZeros([capacity], .int32)
+		densifyKeepFlag = try metalContext.makeZeros([capacity], .int32)
+		densifyKeepPrefix = try metalContext.makeZeros([capacity], .int32)
+		densifyBlockTotals = try metalContext.makeZeros([(capacity + 1023) / 1024], .int32)
+		densifyCompactScratch = try metalContext.makeZeros([capacity * frStride], .float32)
+		densifyRandomSamples = try metalContext.makeZeros([capacity, 3], .float32)
     }
 
     func setupOptimizers() {
@@ -291,32 +303,32 @@ final class Model
 
         numActive = means.size(0)
         bufCapacity = numActive * 4
-        meansBuf = allocBuf(means)
-        scalesBuf = allocBuf(scales)
-        quatsBuf = allocBuf(quats)
-        featuresDcBuf = allocBuf(featuresDc)
-        featuresRestBuf = allocBuf(featuresRest)
-        opacitiesBuf = allocBuf(opacities)
+        meansBuf = try! allocBuf(means)
+        scalesBuf = try! allocBuf(scales)
+        quatsBuf = try! allocBuf(quats)
+        featuresDcBuf = try! allocBuf(featuresDc)
+        featuresRestBuf = try! allocBuf(featuresRest)
+        opacitiesBuf = try! allocBuf(opacities)
 
         let params = paramViews
         for g in 0..<Model.nAdamGroups {
             var shape = params[g].shape
             shape[0] = bufCapacity
-            adamExpAvgBuf[g] = gpuZeros(shape)
-            adamExpAvgSqBuf[g] = gpuZeros(shape)
+            adamExpAvgBuf[g] = try! metalContext.makeZeros(shape)
+            adamExpAvgSqBuf[g] = try! metalContext.makeZeros(shape)
             adamLr[g] = Model.lrInit[g]
         }
         adamStepCount = 0
         meansLrInit = 0.00016
         meansLrFinal = 0.0000016
 
-        allocDensifyScratch(capacity: bufCapacity, frStride: featuresRest.numel / featuresRest.size(0))
+        try! allocDensifyScratch(capacity: bufCapacity, frStride: featuresRest.numel / featuresRest.size(0))
         refreshViews()
     }
 
     func releaseOptimizers() {
         // Ensure all GPU operations complete before releasing buffers
-        msplatGpuSync()
+        //metalContext.gpuSync()
         
         for g in 0..<Model.nAdamGroups {
             adamExpAvg[g].reset(); adamExpAvgSq[g].reset()
@@ -355,7 +367,7 @@ final class Model
         func grow(_ buf: MTensor) -> MTensor {
             var shape = buf.shape
             shape[0] = newCap
-            let nb = gpuZeros(shape)
+            let nb = try! metalContext.makeZeros(shape)
             memcpy(nb.rawPointer, buf.rawPointer, numActive * buf.stride0 * MemoryLayout<Float>.size)
             return nb
         }
@@ -373,7 +385,7 @@ final class Model
             adamExpAvgBuf[g] = grow(adamExpAvgBuf[g])
             adamExpAvgSqBuf[g] = grow(adamExpAvgSqBuf[g])
         }
-        allocDensifyScratch(capacity: newCap, frStride: featuresRestBuf.stride0)
+        try! allocDensifyScratch(capacity: newCap, frStride: featuresRestBuf.stride0)
         bufCapacity = newCap
         refreshViews()
     }
@@ -383,7 +395,8 @@ final class Model
         return 1 << max(remaining, 0)
     }
 
-    func afterTrain(_ step: Int) {
+    func afterTrain(_ step: Int) async throws
+	{
         guard radii.defined else { return }
         guard step % refineEvery == 0 && step > warmupLength else { return }
 
@@ -403,24 +416,25 @@ final class Model
             }
 
             let checkHuge = step > refineEvery * resetAlphaEvery
-            let newCount = msplatDensify(DensifyParams(
-                n: numActive, bufCapacity: bufCapacity,
-                gradThresh: densifyGradThresh, sizeThresh: densifySizeThresh,
-                screenThresh: splitScreenSize,
-                checkScreen: step < stopScreenSizeAt ? 1 : 0,
-                cullAlphaThresh: 0.1, cullScaleThresh: 0.5, cullScreenSize: 0.15,
-                checkHuge: checkHuge ? 1 : 0,
-                xysGradNorm: xysGradNorm, visCounts: visCounts, max2dSize: max2DSize,
-                halfMaxDim: 0.5 * Float(max(lastWidth, lastHeight)),
-                meansBuf: meansBuf, scalesBuf: scalesBuf, quatsBuf: quatsBuf,
-                featuresDcBuf: featuresDcBuf, featuresRestBuf: featuresRestBuf,
-                opacitiesBuf: opacitiesBuf, frStride: featuresRestBuf.stride0,
-                adamExpAvgBuf: adamExpAvgBuf, adamExpAvgSqBuf: adamExpAvgSqBuf,
-                splitFlag: densifySplitFlag, dupFlag: densifyDupFlag,
-                splitPrefix: densifySplitPrefix, dupPrefix: densifyDupPrefix,
-                keepFlag: densifyKeepFlag, keepPrefix: densifyKeepPrefix,
-                blockTotals: densifyBlockTotals, compactScratch: densifyCompactScratch,
-                randomSamples: densifyRandomSamples))
+			let denisifyParams = DensifyParams(
+				n: numActive, bufCapacity: bufCapacity,
+				gradThresh: densifyGradThresh, sizeThresh: densifySizeThresh,
+				screenThresh: splitScreenSize,
+				checkScreen: step < stopScreenSizeAt ? 1 : 0,
+				cullAlphaThresh: 0.1, cullScaleThresh: 0.5, cullScreenSize: 0.15,
+				checkHuge: checkHuge ? 1 : 0,
+				xysGradNorm: xysGradNorm, visCounts: visCounts, max2dSize: max2DSize,
+				halfMaxDim: 0.5 * Float(max(lastWidth, lastHeight)),
+				meansBuf: meansBuf, scalesBuf: scalesBuf, quatsBuf: quatsBuf,
+				featuresDcBuf: featuresDcBuf, featuresRestBuf: featuresRestBuf,
+				opacitiesBuf: opacitiesBuf, frStride: featuresRestBuf.stride0,
+				adamExpAvgBuf: adamExpAvgBuf, adamExpAvgSqBuf: adamExpAvgSqBuf,
+				splitFlag: densifySplitFlag, dupFlag: densifyDupFlag,
+				splitPrefix: densifySplitPrefix, dupPrefix: densifyDupPrefix,
+				keepFlag: densifyKeepFlag, keepPrefix: densifyKeepPrefix,
+				blockTotals: densifyBlockTotals, compactScratch: densifyCompactScratch,
+				randomSamples: densifyRandomSamples)
+            let newCount = try await msplatDensify(denisifyParams, metalContext)
 
             numActive = newCount
             refreshViews()
@@ -428,7 +442,7 @@ final class Model
         }
 
         if step < stopSplitAt && step % resetInterval == refineEvery {
-            msplatGpuSync()
+            //metalContext.gpuSync()
             let resetLogit: Float = -1.3862943611198906
             let op = opacities.floats()
             for i in 0..<opacities.numel where op[i] > resetLogit { op[i] = resetLogit }
@@ -465,9 +479,13 @@ final class Model
     }
 
     func loadPly(_ filename: String) throws -> Int {
-        let g = try loadGaussianPly(filename, scale: scale, translation: translation, keepCrs: keepCrs)
-        means = g.means; scales = g.scales; quats = g.quats
-        featuresDc = g.featuresDc; featuresRest = g.featuresRest; opacities = g.opacities
+        let g = try loadGaussianPly(filename, scale: scale, translation: translation, keepCrs: keepCrs, metalContext: metalContext)
+        means = g.means
+		scales = g.scales
+		quats = g.quats
+        featuresDc = g.featuresDc
+		featuresRest = g.featuresRest
+		opacities = g.opacities
         setupOptimizers()
         return g.step
     }
@@ -489,12 +507,12 @@ final class Model
         d.append(contentsOf: UnsafeRawBufferPointer(start: t.rawPointer, count: t.nbytes))
     }
 
-    private static func readTensor(_ r: inout BinaryReader) throws -> MTensor {
+    private func readTensor(_ r: inout BinaryReader) throws -> MTensor {
         let ndim = Int(try r.read(UInt32.self))
         var shape: [Int] = []
         for _ in 0..<ndim { shape.append(Int(try r.read(Int64.self))) }
         let bytes = Int(try r.read(UInt64.self))
-        let t = gpuEmpty(shape, .float32)
+        let t = try metalContext.makeEmpty(shape, .float32)
         guard r.remaining >= bytes, bytes <= t.nbytes else { throw MsplatError("Checkpoint truncated") }
         r.data.withUnsafeBytes { raw in
             memcpy(t.rawPointer, raw.baseAddress!.advanced(by: r.offset), bytes)
@@ -504,7 +522,7 @@ final class Model
     }
 
     func saveCheckpoint(_ filename: String, step: Int) throws {
-        msplatGpuSync()
+        //metalContext.gpuSync()
 
         var d = Data()
         Model.append(&d, Model.ckptMagic)
@@ -545,29 +563,29 @@ final class Model
         meansLrFinal = try r.readF32()
         adamStepCount = adamSteps
 
-        means = try Model.readTensor(&r)
-        scales = try Model.readTensor(&r)
-        quats = try Model.readTensor(&r)
-        featuresDc = try Model.readTensor(&r)
-        featuresRest = try Model.readTensor(&r)
-        opacities = try Model.readTensor(&r)
-        for g in 0..<Model.nAdamGroups { adamExpAvg[g] = try Model.readTensor(&r) }
-        for g in 0..<Model.nAdamGroups { adamExpAvgSq[g] = try Model.readTensor(&r) }
+        means = try readTensor(&r)
+        scales = try readTensor(&r)
+        quats = try readTensor(&r)
+        featuresDc = try readTensor(&r)
+        featuresRest = try readTensor(&r)
+        opacities = try readTensor(&r)
+        for g in 0..<Model.nAdamGroups { adamExpAvg[g] = try readTensor(&r) }
+        for g in 0..<Model.nAdamGroups { adamExpAvgSq[g] = try readTensor(&r) }
 
         // Rebuild backing buffers (not setupOptimizers — that would zero the loaded state)
         numActive = numPts
         bufCapacity = numActive * 4
-        meansBuf = allocBuf(means)
-        scalesBuf = allocBuf(scales)
-        quatsBuf = allocBuf(quats)
-        featuresDcBuf = allocBuf(featuresDc)
-        featuresRestBuf = allocBuf(featuresRest)
-        opacitiesBuf = allocBuf(opacities)
+        meansBuf = try allocBuf(means)
+        scalesBuf = try allocBuf(scales)
+        quatsBuf = try allocBuf(quats)
+        featuresDcBuf = try allocBuf(featuresDc)
+        featuresRestBuf = try allocBuf(featuresRest)
+        opacitiesBuf = try allocBuf(opacities)
         for g in 0..<Model.nAdamGroups {
-            adamExpAvgBuf[g] = allocBuf(adamExpAvg[g])
-            adamExpAvgSqBuf[g] = allocBuf(adamExpAvgSq[g])
+            adamExpAvgBuf[g] = try allocBuf(adamExpAvg[g])
+            adamExpAvgSqBuf[g] = try allocBuf(adamExpAvgSq[g])
         }
-        allocDensifyScratch(capacity: bufCapacity, frStride: featuresRest.numel / featuresRest.size(0))
+        try allocDensifyScratch(capacity: bufCapacity, frStride: featuresRest.numel / featuresRest.size(0))
         refreshViews()
 
         print("Checkpoint loaded: \(filename) (step \(step), \(numActive) gaussians)")
@@ -583,7 +601,7 @@ final class Model
         var camPos: (Float, Float, Float)
     }
 
-    func prepareCam(_ cam: RuntimeCamera, step: Int) -> CamSetup {
+    func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CamSetup {
         let sf = Float(getDownscaleFactor(step))
         let fx = cam.meta.fx / sf, fy = cam.meta.fy / sf, cx = cam.meta.cx / sf, cy = cam.meta.cy / sf
         let height = Int(Float(cam.meta.height) / sf)
@@ -620,9 +638,9 @@ final class Model
             var pvm = [Float](repeating: 0, count: 16)
             for i in 0..<4 { for j in 0..<4 { for k in 0..<4 { pvm[i * 4 + j] += pm[i * 4 + k] * vm[k * 4 + j] } } }
 
-            cam.cachedViewMat = gpuEmpty([4, 4])
+            cam.cachedViewMat = try metalContext.makeEmpty([4, 4])
             cam.cachedViewMat.copyIn(vm)
-            cam.cachedProjViewMat = gpuEmpty([4, 4])
+            cam.cachedProjViewMat = try! metalContext.makeEmpty([4, 4])
             cam.cachedProjViewMat.copyIn(pvm)
             cam.cachedCamPos = (T[0], T[1], T[2])
             cam.cachedFovX = fovX; cam.cachedFovY = fovY
@@ -649,18 +667,20 @@ final class Model
 			opacities: opacities, background: backgroundColor, channels:UInt32(channels) )
     }
 
-    func render(_ cam: RuntimeCamera, step: Int, channels:Int) -> MTensor {
-        let s = prepareCam(cam, step: step)
-		return msplatRender(renderParams(cam, s, channels:channels))
+    func render(_ cam: RuntimeCamera, step: Int, channels:Int) async throws -> MTensor 
+	{
+        let s = try prepareCam(cam, step: step)
+		return try await msplatRender(renderParams(cam, s, channels:channels), metalContext)
     }
 
-    func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) {
-        let s = prepareCam(cam, step: step)
+	func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) async throws 
+	{
+        let s = try prepareCam(cam, step: step)
         lastHeight = s.height; lastWidth = s.width
         let numPoints = means.size(0)
 
         if !window2d.defined {
-            window2d = gpuEmpty([11, 11])
+            window2d = try! metalContext.makeEmpty([11, 11])
             window2d.copyIn(createSSIMWindow(windowSize: 11, sigma: 1.5))
         }
 
@@ -672,22 +692,23 @@ final class Model
         let bc2Sqrts = [Float](repeating: bc2.squareRoot(), count: Model.nAdamGroups)
 
         if !xysGradNorm.defined {
-            xysGradNorm = gpuZeros([numPoints])
-            visCounts = gpuZeros([numPoints])
-            max2DSize = gpuZeros([numPoints])
+            xysGradNorm = try! metalContext.makeZeros([numPoints])
+            visCounts = try! metalContext.makeZeros([numPoints])
+            max2DSize = try! metalContext.makeZeros([numPoints])
         }
 
         let invMaxDim = 1.0 / Float(max(lastHeight, lastWidth))
         let lossInvN = 1.0 / Float(s.height * s.width * 3)
 
-        let (r, _) = msplatTrainStep(renderParams(cam, s, channels: 3), TrainParams(
-            gt: gt, window2d: window2d, ssimWeight: ssimWeight,
-            lossInvN: lossInvN, featuresRestBases: featuresRest.size(-2),
-            adamParams: paramViews, adamExpAvg: adamExpAvg, adamExpAvgSq: adamExpAvgSq,
-            adamStepSizes: stepSizes, adamBc2Sqrts: bc2Sqrts,
-            adamBeta1: adamBeta1, adamBeta2: adamBeta2, adamEps: adamEps,
-            visCounts: visCounts, xysGradNorm: xysGradNorm, max2dSize: max2DSize,
-            invMaxDim: invMaxDim))
+		let params = TrainParams(
+			gt: gt, window2d: window2d, ssimWeight: ssimWeight,
+			lossInvN: lossInvN, featuresRestBases: featuresRest.size(-2),
+			adamParams: paramViews, adamExpAvg: adamExpAvg, adamExpAvgSq: adamExpAvgSq,
+			adamStepSizes: stepSizes, adamBc2Sqrts: bc2Sqrts,
+			adamBeta1: adamBeta1, adamBeta2: adamBeta2, adamEps: adamEps,
+			visCounts: visCounts, xysGradNorm: xysGradNorm, max2dSize: max2DSize,
+			invMaxDim: invMaxDim)
+        let (r, _) = try await msplatTrainStep(renderParams(cam, s, channels: 3), params, metalContext)
         radii = r
     }
     

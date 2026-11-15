@@ -16,8 +16,10 @@ private func writeData(_ data: Data, to path: String) throws {
     catch { throw MsplatError("Cannot write \(path): \(error.localizedDescription)") }
 }
 
-func saveGaussianPly(_ path: String, _ p: GaussianParams, step: Int) throws {
-    msplatGpuSync()
+func saveGaussianPly(_ path: String, _ p: GaussianParams, step: Int) throws 
+{
+	throw MsplatError("save-ply should be grabbing a state")
+	//  msplatGpuSync()
 
     let N = p.means.size(0)
     let numDc = p.featuresDc.size(1)
@@ -75,8 +77,7 @@ func clampToUInt8(_ v: Float) -> UInt8 {
 }
 
 func saveGaussianSplat(_ path: String, _ p: GaussianParams) throws {
-    msplatGpuSync()
-
+ 
     let N = p.means.size(0)
     let mp = p.means.floats(), sp = p.scales.floats(), qp = p.quats.floats()
     let dp = p.featuresDc.floats(), op = p.opacities.floats()
@@ -127,8 +128,7 @@ struct LoadedGaussians {
 }
 
 func loadGaussianPly(_ path: String, scale: Float, translation: (Float, Float, Float),
-                     keepCrs: Bool) throws -> LoadedGaussians {
-    msplatGpuSync()
+					 keepCrs: Bool,metalContext:MetalContext) throws -> LoadedGaussians {
 
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
         throw MsplatError("Cannot open PLY file: \(path)")
@@ -192,14 +192,14 @@ func loadGaussianPly(_ path: String, scale: Float, translation: (Float, Float, F
         for i in 0..<(numPoints * 3) { scRaw[i] = logf(scale * expf(scRaw[i])) }
     }
 
-    func upload(_ shape: [Int], _ src: [Float]) -> MTensor {
-        let t = gpuEmpty(shape, .float32)
+    func upload(_ shape: [Int], _ src: [Float]) throws -> MTensor {
+		let t = try metalContext.makeEmpty(shape, .float32)
         t.copyIn(src)
         return t
     }
 
     // Transpose featuresRest: PLY [N, 3, frBases] → internal [N, frBases, 3]
-    let fr = gpuEmpty([numPoints, frBases, 3], .float32)
+	let fr = try metalContext.makeEmpty([numPoints, frBases, 3], .float32)
     let frOut = fr.floats()
     for i in 0..<numPoints {
         for ch in 0..<3 {
@@ -210,11 +210,11 @@ func loadGaussianPly(_ path: String, scale: Float, translation: (Float, Float, F
     }
 
     return LoadedGaussians(
-        means: upload([numPoints, 3], meansRaw),
-        scales: upload([numPoints, 3], scRaw),
-        quats: upload([numPoints, 4], qtRaw),
-        featuresDc: upload([numPoints, numDc], dcRaw),
+        means: try upload([numPoints, 3], meansRaw),
+        scales: try upload([numPoints, 3], scRaw),
+        quats: try upload([numPoints, 4], qtRaw),
+        featuresDc: try upload([numPoints, numDc], dcRaw),
         featuresRest: fr,
-        opacities: upload([numPoints, 1], opRaw),
+        opacities: try upload([numPoints, 1], opRaw),
         step: step)
 }

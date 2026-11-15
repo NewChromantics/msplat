@@ -14,7 +14,8 @@ let package = Package(
 			.package(name: "NerfStudioData", path: "../NerfStudioData.SwiftPackage"),
 			.package(name: "ColmapData", path: "../ColmapData.SwiftPackage"),
 			.package(name: "PolycamData", path: "../PolycamData.SwiftPackage"),
-			.package(url: "https://github.com/NewChromantics/CoreGraphicsExtensions.SwiftPackage", branch:"main")
+			.package(url: "https://github.com/NewChromantics/CoreGraphicsExtensions.SwiftPackage", branch:"main"),
+			.package(url: "https://github.com/NewChromantics/PopCommon.SwiftPackage", branch:"main")
 		]
 	,
     targets: [
@@ -24,7 +25,8 @@ let package = Package(
 				"NerfStudioData",
 				"ColmapData",
 				"PolycamData",
-				.product(name: "CoreGraphicsExtensions", package: "CoreGraphicsExtensions.SwiftPackage")
+				.product(name: "CoreGraphicsExtensions", package: "CoreGraphicsExtensions.SwiftPackage"),
+				.product(name: "PopCommon", package: "PopCommon.SwiftPackage")
 				],
             path: "Sources/MsplatCore",
             resources: [

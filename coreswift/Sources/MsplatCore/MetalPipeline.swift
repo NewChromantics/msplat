@@ -96,67 +96,71 @@ struct FusedTensorCache {
     mutating func ensureForward(np: Int, cap: Int, ih: Int, iw: Int, nt: Int, ch: Int, ctx: MetalContext) {
         if np != fwdNumPoints {
             fwdNumPoints = np
-            xys = ctx.makeEmpty([np, 2], .float32)
-            depths = ctx.makeEmpty([np], .float32)
-            radiiOut = ctx.makeEmpty([np], .int32)
-            conics = ctx.makeEmpty([np, 3], .float32)
-            numTilesHit = ctx.makeEmpty([np], .int32)
-            colors = ctx.makeEmpty([np, 3], .float32)
-            aabb = ctx.makeEmpty([np, 2], .float32)
-            blockTotals = ctx.makeEmpty([(np + 1023) / 1024], .int32)
+            xys = try! ctx.makeEmpty([np, 2], .float32)
+            depths = try! ctx.makeEmpty([np], .float32)
+            radiiOut = try! ctx.makeEmpty([np], .int32)
+            conics = try! ctx.makeEmpty([np, 3], .float32)
+            numTilesHit = try! ctx.makeEmpty([np], .int32)
+            colors = try! ctx.makeEmpty([np, 3], .float32)
+            aabb = try! ctx.makeEmpty([np, 2], .float32)
+            blockTotals = try! ctx.makeEmpty([(np + 1023) / 1024], .int32)
         }
         if cap != capacity {
             capacity = cap
-            gaussianIds = ctx.makeEmpty([cap], .int32)
-            packedXyOpac = ctx.makeEmpty([cap, 3], .float32)
-            packedConic = ctx.makeEmpty([cap, 3], .float32)
-            packedRgb = ctx.makeEmpty([cap, 3], .float32)
+            gaussianIds = try! ctx.makeEmpty([cap], .int32)
+            packedXyOpac = try! ctx.makeEmpty([cap, 3], .float32)
+            packedConic = try! ctx.makeEmpty([cap, 3], .float32)
+            packedRgb = try! ctx.makeEmpty([cap, 3], .float32)
         }
         if ih != imgHeight || iw != imgWidth || ch != channels {
             imgHeight = ih; imgWidth = iw; channels = ch
-            outImg = ctx.makeEmpty([ih, iw, ch], .float32)
-            finalTs = ctx.makeEmpty([ih, iw], .float32)
-            finalIdx = ctx.makeEmpty([ih, iw], .int32)
-            lossIntermediates = ctx.makeEmpty([ih, iw, 15], .float32)
-            ssimHBuf = ctx.makeEmpty([ih, iw, 15], .float32)
-            vRendered = ctx.makeEmpty([ih, iw, ch], .float32)
+            outImg = try! ctx.makeEmpty([ih, iw, ch], .float32)
+            finalTs = try! ctx.makeEmpty([ih, iw], .float32)
+            finalIdx = try! ctx.makeEmpty([ih, iw], .int32)
+            lossIntermediates = try! ctx.makeEmpty([ih, iw, 15], .float32)
+            ssimHBuf = try! ctx.makeEmpty([ih, iw, 15], .float32)
+            vRendered = try! ctx.makeEmpty([ih, iw, ch], .float32)
         }
         if nt != numTiles {
             numTiles = nt
-            tileBins = ctx.makeEmpty([nt, 2], .int32)
-            tileOffsets = ctx.makeEmpty([nt], .int32)
-            tileScatterCounters = ctx.makeEmpty([nt], .int32)
-            preallocBins = ctx.makeEmpty([nt * MAX_TILE_ELEMS], .int64)
+            tileBins = try! ctx.makeEmpty([nt, 2], .int32)
+            tileOffsets = try! ctx.makeEmpty([nt], .int32)
+            tileScatterCounters = try! ctx.makeEmpty([nt], .int32)
+            preallocBins = try! ctx.makeEmpty([nt * MAX_TILE_ELEMS], .int64)
         }
-        if !lossSum.defined { lossSum = ctx.makeEmpty([1], .float32) }
-        if !overflowFlag.defined { overflowFlag = ctx.makeEmpty([1], .int32) }
+        if !lossSum.defined { lossSum = try! ctx.makeEmpty([1], .float32) }
+        if !overflowFlag.defined { overflowFlag = try! ctx.makeEmpty([1], .int32) }
     }
 
-    mutating func ensureChunks(k: Int, ih: Int, iw: Int, ch: Int, ctx: MetalContext) {
-        if k <= chunkKMax && ih == chunkH && iw == chunkW { return }
+    mutating func ensureChunks(k: Int, ih: Int, iw: Int, ch: Int, ctx: MetalContext) throws 
+	{
+        if k <= chunkKMax && ih == chunkH && iw == chunkW 
+		{
+			return 
+		}
         chunkKMax = k
         chunkH = ih; chunkW = iw
-        chunkT = ctx.makeEmpty([k, ih, iw], .float32)
-        chunkC = ctx.makeEmpty([k, ih, iw, ch], .float32)
-        chunkFinalIdx = ctx.makeEmpty([k, ih, iw], .int32)
-        prefixT = ctx.makeEmpty([k, ih, iw], .float32)
-        afterC = ctx.makeEmpty([k, ih, iw, ch], .float32)
+        chunkT = try ctx.makeEmpty([k, ih, iw], .float32)
+        chunkC = try ctx.makeEmpty([k, ih, iw, ch], .float32)
+        chunkFinalIdx = try ctx.makeEmpty([k, ih, iw], .int32)
+        prefixT = try ctx.makeEmpty([k, ih, iw], .float32)
+        afterC = try ctx.makeEmpty([k, ih, iw, ch], .float32)
     }
 
     mutating func ensureBackward(np: Int, frb: Int, ctx: MetalContext) {
         if np != bwdNumPoints || frb != featuresRestBases || !vXy.defined {
             bwdNumPoints = np
             featuresRestBases = frb
-            vXy = ctx.makeEmpty([np, 2], .float32)
-            vConic = ctx.makeEmpty([np, 3], .float32)
-            vColorsRast = ctx.makeEmpty([np, 3], .float32)
-            vOpacity = ctx.makeEmpty([np, 1], .float32)
-            vDepth = ctx.makeZeros([np], .float32)  // never written; read as 0
-            vMean3d = ctx.makeEmpty([np, 3], .float32)
-            vScale = ctx.makeEmpty([np, 3], .float32)
-            vQuat = ctx.makeEmpty([np, 4], .float32)
-            vFeaturesDc = ctx.makeEmpty([np, 3], .float32)
-            vFeaturesRest = ctx.makeEmpty([np, frb, 3], .float32)
+            vXy = try! ctx.makeEmpty([np, 2], .float32)
+            vConic = try! ctx.makeEmpty([np, 3], .float32)
+            vColorsRast = try! ctx.makeEmpty([np, 3], .float32)
+            vOpacity = try! ctx.makeEmpty([np, 1], .float32)
+            vDepth = try! ctx.makeZeros([np], .float32)  // never written; read as 0
+            vMean3d = try! ctx.makeEmpty([np, 3], .float32)
+            vScale = try! ctx.makeEmpty([np, 3], .float32)
+            vQuat = try! ctx.makeEmpty([np, 4], .float32)
+            vFeaturesDc = try! ctx.makeEmpty([np, 3], .float32)
+            vFeaturesRest = try! ctx.makeEmpty([np, frb, 3], .float32)
         }
     }
 }
@@ -271,8 +275,9 @@ private struct OverflowCheck {
         let c = gTensorCache
         let numPointsChanged = numPoints != c.fwdNumPoints && c.fwdNumPoints > 0
         if !warned && c.overflowFlag.defined && c.fwdNumPoints > 0
-            && (numPointsChanged || iterCount % 100 == 1) {
-            ctx.syncCB()
+            && (numPointsChanged || iterCount % 100 == 1) 
+		{
+            //ctx.gpuSync()
             if c.overflowFlag.int32s()[0] > 0 {
                 logErr("WARNING: per-tile overflow (>2048 gaussians in a tile). "
                     + "Some gaussians were dropped from overfull tiles.")
@@ -397,9 +402,8 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
 // MARK: - Render (forward only)
 
 /// Render-only forward pass. Returns the cached (H, W, 3) output tensor; its contents
-/// are valid after the next sync.
-func msplatRender(_ p: RenderParams) -> MTensor {
-    let ctx = MetalContext.current
+/// are valid after the function returns.
+func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTensor {
     renderOverflow.run(numPoints: p.numPoints, ctx: ctx)
 
     let k = Consts(p)
@@ -427,24 +431,28 @@ func msplatRender(_ p: RenderParams) -> MTensor {
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1 {
-        gTensorCache.ensureChunks(k: Int(kMax), ih: Int(p.imgHeight), iw: Int(p.imgWidth), ch: Int(p.channels), ctx: ctx)
+        try gTensorCache.ensureChunks(k: Int(kMax), ih: Int(p.imgHeight), iw: Int(p.imgWidth), ch: Int(p.channels), ctx: ctx)
     }
 
-    let cb = ctx.commandBuffer()
-    // Zero accumulating buffers on the GPU (a CPU memset would race the previous CB).
-    let blit = cb.makeBlitCommandEncoder()!
-    blit.zero(gTensorCache.lossSum)
-    blit.zero(gTensorCache.overflowFlag)
-    blit.zero(gTensorCache.tileScatterCounters)
-    blit.endEncoding()
+    // Execute render and wait for completion
+    try await ctx.executeAsync 
+	{
+		cb in
+        // Zero accumulating buffers on the GPU (a CPU memset would race the previous CB).
+        let blit = cb.makeBlitCommandEncoder()!
+        blit.zero(gTensorCache.lossSum)
+        blit.zero(gTensorCache.overflowFlag)
+        blit.zero(gTensorCache.tileScatterCounters)
+        blit.endEncoding()
 
-    let enc = cb.makeComputeCommandEncoder()!
-    encodeProjSh(enc, ctx, p, k)
-    enc.barrier()
-    encodePrefixMap(enc, ctx, p, k)
-    enc.barrier()
-    encodeRastFwd(enc, ctx, p, k, kMax: kMax)
-    enc.endEncoding()
+        let enc = cb.makeComputeCommandEncoder()!
+        encodeProjSh(enc, ctx, p, k)
+        enc.barrier()
+        encodePrefixMap(enc, ctx, p, k)
+        enc.barrier()
+        encodeRastFwd(enc, ctx, p, k, kMax: kMax)
+        enc.endEncoding()
+    }
 
     return gTensorCache.outImg
 }
@@ -452,10 +460,8 @@ func msplatRender(_ p: RenderParams) -> MTensor {
 // MARK: - Fused training step
 
 /// Fused forward + loss + backward + Adam + grad-stats in one command buffer.
-/// Returns (radii, loss). Note: as in the C++, `loss` is read from shared memory
-/// without waiting for the GPU, so it reflects the most recently *completed* step.
-func msplatTrainStep(_ p: RenderParams, _ t: TrainParams) -> (radii: MTensor, loss: Float) {
-    let ctx = MetalContext.current
+/// Returns (radii, loss). The loss value reflects the current step after GPU completion.
+func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) async throws -> (radii: MTensor, loss: Float) {
     trainOverflow.run(numPoints: p.numPoints, ctx: ctx)
 
     let k = Consts(p)
@@ -467,7 +473,8 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams) -> (radii: MTensor, lo
     if [200, 1000, 2500, 4500, 6500].contains(trainDiagIt)
         && gTensorCache.tileScatterCounters.defined && gTensorCache.fwdNumPoints > 0
         && benchmarkEnabled {
-        ctx.syncCB()
+        // Sync to read diagnostic data
+        try await ctx.executeAsync { _ in }
         let c = gTensorCache
         let counts = c.tileScatterCounters.int32s()
         let ntPrev = c.tileScatterCounters.numel
@@ -490,7 +497,7 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams) -> (radii: MTensor, lo
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1 {
-        gTensorCache.ensureChunks(k: Int(kMax), ih: h, iw: w, ch: Int(p.channels), ctx: ctx)
+        try gTensorCache.ensureChunks(k: Int(kMax), ih: h, iw: w, ch: Int(p.channels), ctx: ctx)
     }
     let bwdKMax = kMax
 
@@ -670,98 +677,101 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams) -> (radii: MTensor, lo
         Profiling.profileStagesChecked = true
     }
 
-    let cb = ctx.commandBuffer()
+    // Execute training step and wait for completion
+    try await ctx.executeAsync 
+	{
+		cb in
+        if Profiling.profileStages && ctx.counterSamplingAvailable, let csb = ctx.counterSampleBuffer {
+            // Per-stage profiling: separate encoders on the same CB with timestamp bookends.
+            blitZero(cb)
 
-    if Profiling.profileStages && ctx.counterSamplingAvailable, let csb = ctx.counterSampleBuffer {
-        // Per-stage profiling: separate encoders on the same CB with timestamp bookends.
-        blitZero(cb)
+            func profiledEncoder(_ stage: Int) -> MTLComputeCommandEncoder {
+                let pd = MTLComputePassDescriptor()
+                let att = pd.sampleBufferAttachments[0]!
+                att.sampleBuffer = csb
+                att.startOfEncoderSampleIndex = stage * 2
+                att.endOfEncoderSampleIndex = stage * 2 + 1
+                return cb.makeComputeCommandEncoder(descriptor: pd)!
+            }
 
-        func profiledEncoder(_ stage: Int) -> MTLComputeCommandEncoder {
-            let pd = MTLComputePassDescriptor()
-            let att = pd.sampleBufferAttachments[0]!
-            att.sampleBuffer = csb
-            att.startOfEncoderSampleIndex = stage * 2
-            att.endOfEncoderSampleIndex = stage * 2 + 1
-            return cb.makeComputeCommandEncoder(descriptor: pd)!
-        }
+            let stages: [(MTLComputeCommandEncoder) -> Void] = [
+                { encodeProjSh($0, ctx, p, k) },
+                { encodePrefixMap($0, ctx, p, k) },
+                { encodeRastFwd($0, ctx, p, k, kMax: kMax) },
+                encodeLossFwdBwd,
+                encodeRastBwd,
+                encodeProjShBwdAdam,
+                encodeGradStats,
+            ]
+            for (i, encodeStage) in stages.enumerated() {
+                let enc = profiledEncoder(i)
+                encodeStage(enc)
+                enc.endEncoding()
+            }
 
-        let stages: [(MTLComputeCommandEncoder) -> Void] = [
-            { encodeProjSh($0, ctx, p, k) },
-            { encodePrefixMap($0, ctx, p, k) },
-            { encodeRastFwd($0, ctx, p, k, kMax: kMax) },
-            encodeLossFwdBwd,
-            encodeRastBwd,
-            encodeProjShBwdAdam,
-            encodeGradStats,
-        ]
-        for (i, encodeStage) in stages.enumerated() {
-            let enc = profiledEncoder(i)
-            encodeStage(enc)
+            let ticksToMs = ctx.ticksToMs
+            cb.addCompletedHandler { _ in
+                autoreleasepool {
+            
+                    do
+                    {
+                        
+                        let n = (nTrainStages - 1) * 2
+                        guard let data = try csb.resolveCounterRange(0..<n) else { return }
+                        data.withUnsafeBytes { raw in
+                            let samples = raw.bindMemory(to: MTLCounterResultTimestamp.self)
+                            Profiling.lock.lock(); defer { Profiling.lock.unlock() }
+                            for i in 0..<(nTrainStages - 1) {
+                                let start = samples[i * 2].timestamp
+                                let end = samples[i * 2 + 1].timestamp
+                                if start == UInt64.max || end == UInt64.max { continue }  // MTLCounterErrorValue
+                                // encoder 0..6 → stage names 1..7 (blit_zero isn't sampled)
+                                Profiling.stageTimes[i + 1].append(Double(end &- start) * ticksToMs)
+                            }
+                            Profiling.stageReportCount += 1
+                            if Profiling.stageReportCount % 500 == 0 {
+                                var report = "\n  === GPU Stage Profile (n=\(Profiling.stageReportCount)) ===\n"
+                                var totalMedian = 0.0
+                                for i in 1..<nTrainStages {
+                                    let v = Profiling.stageTimes[i]
+                                    if v.isEmpty { continue }
+                                    let sorted = v.sorted()
+                                    let med = sorted[sorted.count / 2]
+                                    totalMedian += med
+                                    report += "  " + pad20(trainStageNames[i])
+                                    + String(format: " median=%.3fms  mean=%.3fms\n",
+                                             med, sorted.reduce(0, +) / Double(sorted.count))
+                                }
+                                report += "  " + pad20("TOTAL (sum medians)") + String(format: " %.3fms", totalMedian)
+                                logErr(report)
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        logErr(error.localizedDescription)
+                    }
+                }
+            }
+        } else {
+            // Production: single encoder for everything
+            blitZero(cb)
+            let enc = cb.makeComputeCommandEncoder()!
+            encodeProjSh(enc, ctx, p, k)
+            enc.barrier()
+            encodePrefixMap(enc, ctx, p, k)
+            enc.barrier()
+            encodeRastFwd(enc, ctx, p, k, kMax: kMax)
+            enc.barrier()
+            encodeLossFwdBwd(enc)
+            enc.barrier()
+            encodeRastBwd(enc)
+            enc.barrier()
+            encodeProjShBwdAdam(enc)
+            enc.barrier()
+            encodeGradStats(enc)
             enc.endEncoding()
         }
-
-        let ticksToMs = ctx.ticksToMs
-        cb.addCompletedHandler { _ in
-            autoreleasepool {
-		
-				do
-				{
-					
-					let n = (nTrainStages - 1) * 2
-					guard let data = try csb.resolveCounterRange(0..<n) else { return }
-					data.withUnsafeBytes { raw in
-						let samples = raw.bindMemory(to: MTLCounterResultTimestamp.self)
-						Profiling.lock.lock(); defer { Profiling.lock.unlock() }
-						for i in 0..<(nTrainStages - 1) {
-							let start = samples[i * 2].timestamp
-							let end = samples[i * 2 + 1].timestamp
-							if start == UInt64.max || end == UInt64.max { continue }  // MTLCounterErrorValue
-							// encoder 0..6 → stage names 1..7 (blit_zero isn't sampled)
-							Profiling.stageTimes[i + 1].append(Double(end &- start) * ticksToMs)
-						}
-						Profiling.stageReportCount += 1
-						if Profiling.stageReportCount % 500 == 0 {
-							var report = "\n  === GPU Stage Profile (n=\(Profiling.stageReportCount)) ===\n"
-							var totalMedian = 0.0
-							for i in 1..<nTrainStages {
-								let v = Profiling.stageTimes[i]
-								if v.isEmpty { continue }
-								let sorted = v.sorted()
-								let med = sorted[sorted.count / 2]
-								totalMedian += med
-								report += "  " + pad20(trainStageNames[i])
-								+ String(format: " median=%.3fms  mean=%.3fms\n",
-										 med, sorted.reduce(0, +) / Double(sorted.count))
-							}
-							report += "  " + pad20("TOTAL (sum medians)") + String(format: " %.3fms", totalMedian)
-							logErr(report)
-						}
-					}
-				}
-				catch
-				{
-					logErr(error.localizedDescription)
-				}
-            }
-        }
-    } else {
-        // Production: single encoder for everything
-        blitZero(cb)
-        let enc = cb.makeComputeCommandEncoder()!
-        encodeProjSh(enc, ctx, p, k)
-        enc.barrier()
-        encodePrefixMap(enc, ctx, p, k)
-        enc.barrier()
-        encodeRastFwd(enc, ctx, p, k, kMax: kMax)
-        enc.barrier()
-        encodeLossFwdBwd(enc)
-        enc.barrier()
-        encodeRastBwd(enc)
-        enc.barrier()
-        encodeProjShBwdAdam(enc)
-        enc.barrier()
-        encodeGradStats(enc)
-        enc.endEncoding()
     }
 
     let loss = c.lossSum.floats()[0] / Float(h * w)
@@ -796,8 +806,7 @@ public struct DensifyParams {
 
 /// Entire classify → grow → cull → compact pipeline in one encoder.
 /// Returns the new number of active gaussians (one GPU→CPU sync).
-func msplatDensify(_ d: DensifyParams) -> Int {
-    let ctx = MetalContext.current
+func msplatDensify(_ d: DensifyParams, _ ctx: MetalContext) async throws -> Int {
 
     // Worst case: every gaussian splits (2 children) + dups (1 copy) = 3N
     let worstCase = 3 * d.n
@@ -816,136 +825,139 @@ func msplatDensify(_ d: DensifyParams) -> Int {
     let k = (d.n + 1023) / 1024  // threadgroups for prefix sum on N elements
     let frStride = Int32(d.frStride)
 
-    let cb = ctx.commandBuffer()
-    let enc = cb.makeComputeCommandEncoder()!
+    // Execute densification and wait for completion
+    try await ctx.executeAsync 
+	{
+		cb in
+        let enc = cb.makeComputeCommandEncoder()!
 
-    func prefixSum(count: UInt32, groups: Int, flags: MTensor, prefix: MTensor) {
-        let tg = MTLSize(width: 1024, height: 1, depth: 1)
-        enc.setComputePipelineState(ctx.block_reduce)
-        enc.setScalar(count, 0); enc.setTensor(flags, 1)
-        enc.setTensor(d.blockTotals, 2)
-        enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1), threadsPerThreadgroup: tg)
-        enc.barrier()
-        enc.setComputePipelineState(ctx.block_scan_propagate)
-        enc.setScalar(count, 0); enc.setTensor(flags, 1)
-        enc.setTensor(prefix, 2); enc.setTensor(d.blockTotals, 3)
-        enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1), threadsPerThreadgroup: tg)
-        enc.barrier()
-    }
+        func prefixSum(count: UInt32, groups: Int, flags: MTensor, prefix: MTensor) {
+            let tg = MTLSize(width: 1024, height: 1, depth: 1)
+            enc.setComputePipelineState(ctx.block_reduce)
+            enc.setScalar(count, 0); enc.setTensor(flags, 1)
+            enc.setTensor(d.blockTotals, 2)
+            enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1), threadsPerThreadgroup: tg)
+            enc.barrier()
+            enc.setComputePipelineState(ctx.block_scan_propagate)
+            enc.setScalar(count, 0); enc.setTensor(flags, 1)
+            enc.setTensor(prefix, 2); enc.setTensor(d.blockTotals, 3)
+            enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1), threadsPerThreadgroup: tg)
+            enc.barrier()
+        }
 
-    // ---- Stage 1: classify (split / dup) ----
-    enc.setComputePipelineState(ctx.densify_classify)
-    enc.setScalar(nU32, 0)
-    enc.setTensor(d.xysGradNorm, 1)
-    enc.setTensor(d.visCounts, 2)
-    enc.setTensor(d.scalesBuf, 3)
-    enc.setTensor(d.max2dSize, 4)
-    enc.setScalar(d.halfMaxDim, 5)
-    enc.setScalar(d.gradThresh, 6)
-    enc.setScalar(d.sizeThresh, 7)
-    enc.setScalar(d.screenThresh, 8)
-    enc.setScalar(d.checkScreen, 9)
-    enc.setTensor(d.splitFlag, 10)
-    enc.setTensor(d.dupFlag, 11)
-    enc.dispatch1D(d.n, ctx.densify_classify)
-    enc.barrier()
+		// ---- Stage 1: classify (split / dup) ----
+		enc.setComputePipelineState(ctx.densify_classify)
+		enc.setScalar(nU32, 0)
+		enc.setTensor(d.xysGradNorm, 1)
+		enc.setTensor(d.visCounts, 2)
+		enc.setTensor(d.scalesBuf, 3)
+		enc.setTensor(d.max2dSize, 4)
+		enc.setScalar(d.halfMaxDim, 5)
+		enc.setScalar(d.gradThresh, 6)
+		enc.setScalar(d.sizeThresh, 7)
+		enc.setScalar(d.screenThresh, 8)
+		enc.setScalar(d.checkScreen, 9)
+		enc.setTensor(d.splitFlag, 10)
+		enc.setTensor(d.dupFlag, 11)
+		enc.dispatch1D(d.n, ctx.densify_classify)
+		enc.barrier()
 
-    // ---- Stages 2–3: prefix sums ----
-    prefixSum(count: nU32, groups: k, flags: d.splitFlag, prefix: d.splitPrefix)
-    prefixSum(count: nU32, groups: k, flags: d.dupFlag, prefix: d.dupPrefix)
+		// ---- Stages 2–3: prefix sums ----
+		prefixSum(count: nU32, groups: k, flags: d.splitFlag, prefix: d.splitPrefix)
+		prefixSum(count: nU32, groups: k, flags: d.dupFlag, prefix: d.dupPrefix)
 
-    // ---- Stage 4: append split children ----
-    enc.setComputePipelineState(ctx.densify_append_split)
-    enc.setScalar(nU32, 0)
-    enc.setTensor(d.splitFlag, 1)
-    enc.setTensor(d.splitPrefix, 2)
-    enc.setTensor(d.randomSamples, 3)
-    enc.setScalar(logSizeFac, 4)
-    enc.setTensor(d.meansBuf, 5)
-    enc.setTensor(d.scalesBuf, 6)
-    enc.setTensor(d.quatsBuf, 7)
-    enc.setTensor(d.featuresDcBuf, 8)
-    enc.setTensor(d.featuresRestBuf, 9)
-    enc.setTensor(d.opacitiesBuf, 10)
-    enc.setScalar(frStride, 11)
-    for g in 0..<6 { enc.setTensor(d.adamExpAvgBuf[g], 12 + g) }
-    for g in 0..<6 { enc.setTensor(d.adamExpAvgSqBuf[g], 18 + g) }
-    enc.dispatch1D(d.n, ctx.densify_append_split)
-    enc.barrier()
+		// ---- Stage 4: append split children ----
+		enc.setComputePipelineState(ctx.densify_append_split)
+		enc.setScalar(nU32, 0)
+		enc.setTensor(d.splitFlag, 1)
+		enc.setTensor(d.splitPrefix, 2)
+		enc.setTensor(d.randomSamples, 3)
+		enc.setScalar(logSizeFac, 4)
+		enc.setTensor(d.meansBuf, 5)
+		enc.setTensor(d.scalesBuf, 6)
+		enc.setTensor(d.quatsBuf, 7)
+		enc.setTensor(d.featuresDcBuf, 8)
+		enc.setTensor(d.featuresRestBuf, 9)
+		enc.setTensor(d.opacitiesBuf, 10)
+		enc.setScalar(frStride, 11)
+		for g in 0..<6 { enc.setTensor(d.adamExpAvgBuf[g], 12 + g) }
+		for g in 0..<6 { enc.setTensor(d.adamExpAvgSqBuf[g], 18 + g) }
+		enc.dispatch1D(d.n, ctx.densify_append_split)
+		enc.barrier()
 
-    // ---- Stage 5: append duplicates ----
-    enc.setComputePipelineState(ctx.densify_append_dup)
-    enc.setScalar(nU32, 0)
-    enc.setTensor(d.dupFlag, 1)
-    enc.setTensor(d.dupPrefix, 2)
-    enc.setTensor(d.splitPrefix, 3)
-    enc.setTensor(d.meansBuf, 4)
-    enc.setTensor(d.scalesBuf, 5)
-    enc.setTensor(d.quatsBuf, 6)
-    enc.setTensor(d.featuresDcBuf, 7)
-    enc.setTensor(d.featuresRestBuf, 8)
-    enc.setTensor(d.opacitiesBuf, 9)
-    enc.setScalar(frStride, 10)
-    for g in 0..<6 { enc.setTensor(d.adamExpAvgBuf[g], 11 + g) }
-    for g in 0..<6 { enc.setTensor(d.adamExpAvgSqBuf[g], 17 + g) }
-    enc.dispatch1D(d.n, ctx.densify_append_dup)
-    enc.barrier()
+		// ---- Stage 5: append duplicates ----
+		enc.setComputePipelineState(ctx.densify_append_dup)
+		enc.setScalar(nU32, 0)
+		enc.setTensor(d.dupFlag, 1)
+		enc.setTensor(d.dupPrefix, 2)
+		enc.setTensor(d.splitPrefix, 3)
+		enc.setTensor(d.meansBuf, 4)
+		enc.setTensor(d.scalesBuf, 5)
+		enc.setTensor(d.quatsBuf, 6)
+		enc.setTensor(d.featuresDcBuf, 7)
+		enc.setTensor(d.featuresRestBuf, 8)
+		enc.setTensor(d.opacitiesBuf, 9)
+		enc.setScalar(frStride, 10)
+		for g in 0..<6 { enc.setTensor(d.adamExpAvgBuf[g], 11 + g) }
+		for g in 0..<6 { enc.setTensor(d.adamExpAvgSqBuf[g], 17 + g) }
+		enc.dispatch1D(d.n, ctx.densify_append_dup)
+		enc.barrier()
 
-    // ---- Stage 6: cull classify on the grown population ----
-    // Dispatch worst_case threads; the kernel derives N_new from the prefix sums.
-    enc.setComputePipelineState(ctx.densify_cull_classify)
-    enc.setScalar(nU32, 0)
-    enc.setTensor(d.splitPrefix, 1)
-    enc.setTensor(d.dupPrefix, 2)
-    enc.setTensor(d.splitFlag, 3)
-    enc.setTensor(d.opacitiesBuf, 4)
-    enc.setTensor(d.scalesBuf, 5)
-    enc.setTensor(d.max2dSize, 6)
-    enc.setScalar(d.cullAlphaThresh, 7)
-    enc.setScalar(d.cullScaleThresh, 8)
-    enc.setScalar(d.cullScreenSize, 9)
-    enc.setScalar(d.checkHuge, 10)
-    enc.setScalar(d.checkScreen, 11)
-    enc.setTensor(d.keepFlag, 12)
-    enc.dispatch1D(worstCase, ctx.densify_cull_classify)
-    enc.barrier()
+		// ---- Stage 6: cull classify on the grown population ----
+		// Dispatch worst_case threads; the kernel derives N_new from the prefix sums.
+		enc.setComputePipelineState(ctx.densify_cull_classify)
+		enc.setScalar(nU32, 0)
+		enc.setTensor(d.splitPrefix, 1)
+		enc.setTensor(d.dupPrefix, 2)
+		enc.setTensor(d.splitFlag, 3)
+		enc.setTensor(d.opacitiesBuf, 4)
+		enc.setTensor(d.scalesBuf, 5)
+		enc.setTensor(d.max2dSize, 6)
+		enc.setScalar(d.cullAlphaThresh, 7)
+		enc.setScalar(d.cullScaleThresh, 8)
+		enc.setScalar(d.cullScreenSize, 9)
+		enc.setScalar(d.checkHuge, 10)
+		enc.setScalar(d.checkScreen, 11)
+		enc.setTensor(d.keepFlag, 12)
+		enc.dispatch1D(worstCase, ctx.densify_cull_classify)
+		enc.barrier()
 
-    // ---- Stage 7: prefix sum on keep_flag over worst_case elements ----
-    let wc = UInt32(worstCase)
-    prefixSum(count: wc, groups: (worstCase + 1023) / 1024, flags: d.keepFlag, prefix: d.keepPrefix)
+		// ---- Stage 7: prefix sum on keep_flag over worst_case elements ----
+		let wc = UInt32(worstCase)
+		prefixSum(count: wc, groups: (worstCase + 1023) / 1024, flags: d.keepFlag, prefix: d.keepPrefix)
 
-    // ---- Stage 8: compact each buffer via scratch, then copy back ----
-    for b in 0..<18 {
-        let strideU32 = UInt32(allStrides[b])
-        let totalThreads = Int(wc * strideU32)
+		// ---- Stage 8: compact each buffer via scratch, then copy back ----
+		for b in 0..<18 {
+			let strideU32 = UInt32(allStrides[b])
+			let totalThreads = Int(wc * strideU32)
 
-        enc.setComputePipelineState(ctx.compact_scatter)
-        enc.setTensor(allBufs[b], 0)
-        enc.setTensor(d.compactScratch, 1)
-        enc.setTensor(d.keepPrefix, 2)
-        enc.setTensor(d.keepFlag, 3)
-        enc.setScalar(wc, 4)
-        enc.setScalar(strideU32, 5)
-        enc.dispatch1D(totalThreads, ctx.compact_scatter)
-        enc.barrier()
+			enc.setComputePipelineState(ctx.compact_scatter)
+			enc.setTensor(allBufs[b], 0)
+			enc.setTensor(d.compactScratch, 1)
+			enc.setTensor(d.keepPrefix, 2)
+			enc.setTensor(d.keepFlag, 3)
+			enc.setScalar(wc, 4)
+			enc.setScalar(strideU32, 5)
+			enc.dispatch1D(totalThreads, ctx.compact_scatter)
+			enc.barrier()
 
-        let lastIdx = wc - 1
-        enc.setComputePipelineState(ctx.compact_copy_back)
-        enc.setTensor(d.compactScratch, 0)
-        enc.setTensor(allBufs[b], 1)
-        enc.setTensor(d.keepPrefix, 2)
-        enc.setScalar(lastIdx, 3)
-        enc.setScalar(strideU32, 4)
-        // C++ sizes this group's threadgroup from compact_scatter's limit too.
-        let tpg = min(ctx.compact_scatter.maxTotalThreadsPerThreadgroup, totalThreads)
-        enc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
-                            threadsPerThreadgroup: MTLSize(width: max(tpg, 1), height: 1, depth: 1))
-        enc.barrier()
-    }
+			let lastIdx = wc - 1
+			enc.setComputePipelineState(ctx.compact_copy_back)
+			enc.setTensor(d.compactScratch, 0)
+			enc.setTensor(allBufs[b], 1)
+			enc.setTensor(d.keepPrefix, 2)
+			enc.setScalar(lastIdx, 3)
+			enc.setScalar(strideU32, 4)
+			// C++ sizes this group's threadgroup from compact_scatter's limit too.
+			let tpg = min(ctx.compact_scatter.maxTotalThreadsPerThreadgroup, totalThreads)
+			enc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
+								threadsPerThreadgroup: MTLSize(width: max(tpg, 1), height: 1, depth: 1))
+			enc.barrier()
+		}
 
-    enc.endEncoding()
+		enc.endEncoding()
+	}
 
-    // Single GPU→CPU sync: new count lives at keep_prefix[worst_case - 1]
-    ctx.syncCB()
+    // GPU work is complete - read new count from keep_prefix[worst_case - 1]
     return Int(d.keepPrefix.int32s()[worstCase - 1])
 }

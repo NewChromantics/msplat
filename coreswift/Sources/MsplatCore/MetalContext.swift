@@ -5,6 +5,7 @@
 import Foundation
 import Metal
 import MetalPerformanceShaders
+import PopCommon
 
 // MARK: - Profiling state (PROFILE_GPU / PROFILE_STAGES)
 
@@ -32,22 +33,12 @@ func logErr(_ s: String) {
     FileHandle.standardError.write((s.hasSuffix("\n") ? s : s + "\n").data(using: .utf8)!)
 }
 
-// MARK: - Metallib path
 
-nonisolated(unsafe) private var gMetallibPath: String?
-
-/// Explicit metallib path (set by wrappers before first use).
-func msplatSetMetallibPath(_ path: String?) {
-    gMetallibPath = path
-}
-
-// MARK: - Context
-
-public final class MetalContext {
+//	metal objects are threadsafe, stats are not 
+public final class MetalContext : @unchecked Sendable 
+{
     let device: MTLDevice
     let queue: MTLCommandQueue
-
-    private var currentCB: MPSCommandBuffer?
 
     // Per-stage GPU timestamp profiling
     var counterSampleBuffer: MTLCounterSampleBuffer?
@@ -87,30 +78,7 @@ public final class MetalContext {
     let compact_scatter: MTLComputePipelineState
     let compact_copy_back: MTLComputePipelineState
 
-    nonisolated(unsafe) private static var _shared: MetalContext?
-    nonisolated(unsafe) private static var initError: Error?
-
-    /// Lazily-created global context (C++: get_global_context()).
-    static func shared() throws -> MetalContext {
-        if let c = _shared { return c }
-        if let e = initError { throw e }
-        do {
-            let c = try MetalContext()
-            _shared = c
-            return c
-        } catch {
-            initError = error
-            throw error
-        }
-    }
-
-    /// Non-throwing accessor for code paths that already required a context.
-    static var current: MetalContext {
-        guard let c = _shared else { fatalError("msplat: Metal context not initialised") }
-        return c
-    }
-
-    private init() throws {
+    public init() throws {
         guard let dev = MTLCreateSystemDefaultDevice() else {
             throw MsplatError("msplat: no Metal device available")
         }
@@ -171,11 +139,9 @@ public final class MetalContext {
     ///  2. default.metallib in this module's resource bundle
     ///  3. default.metallib next to the main executable (CLI builds)
     ///  4. compile the bundled msplat_metal.metal source at runtime
-    private static func loadLibrary(device: MTLDevice) throws -> MTLLibrary {
-        if let p = gMetallibPath {
-            do { return try device.makeLibrary(URL: URL(fileURLWithPath: p)) }
-            catch { throw MsplatError("msplat: failed to load metallib: \(error)") }
-        }
+    private static func loadLibrary(device: MTLDevice) throws -> MTLLibrary 
+	{
+        
         let fm = FileManager.default
         if let url = Bundle.module.url(forResource: "default", withExtension: "metallib"),
            let lib = try? device.makeLibrary(URL: url) {
@@ -231,16 +197,14 @@ public final class MetalContext {
 
     // MARK: Command buffer lifecycle
 
-    func commandBuffer() -> MTLCommandBuffer {
-        if let cb = currentCB { return cb }
-        let cb = MPSCommandBuffer(from: queue)
-        currentCB = cb
-        return cb
+    /// Create a fresh command buffer from this context's queue.
+    func makeCommandBuffer() -> MTLCommandBuffer {
+        return MPSCommandBuffer(from: queue)
     }
-
-    /// Commit current work without waiting (commitAndContinue keeps the same CB object).
-    func commitCB() {
-        guard let cb = currentCB else { return }
+    
+    /// Create a command buffer and add GPU timing handler if enabled.
+    func makeCommandBufferWithTiming() -> MTLCommandBuffer {
+        let cb = MPSCommandBuffer(from: queue)
         if Profiling.gpuTimingEnabled {
             cb.addCompletedHandler { cb in
                 let ms = (cb.gpuEndTime - cb.gpuStartTime) * 1000.0
@@ -251,80 +215,73 @@ public final class MetalContext {
                 }
             }
         }
-        cb.commitAndContinue()
+        return cb
     }
-
-    /// Commit and wait for completion.
-    func syncCB() {
-        guard let cb = currentCB else { return }
+    
+    /// Execute GPU work asynchronously and wait for completion.
+    /// Pass a closure that encodes work into the command buffer.
+    @discardableResult
+	func executeAsync(_ work: (MTLCommandBuffer) throws -> Void) async throws -> MTLCommandBuffer 
+	{
+        let cb = makeCommandBufferWithTiming()
+        try work(cb)
+		
+		let promise = SendablePromise<Void>()
+		cb.addCompletedHandler 
+		{
+			completionMeta in
+			promise.Resolve(Void())
+		}
         cb.commit()
-        cb.waitUntilCompleted()
-        currentCB = nil
+		try await promise.value
+		return cb
     }
 
-    func makeEmpty(_ shape: [Int], _ dtype: DType) -> MTensor {
-        do { return try MTensor(device: device, shape: shape, dtype: dtype) }
-        catch { fatalError("\(error)") }
+    // MARK: - Tensor creation
+    
+    /// Create an empty (uninitialized) tensor with the given shape and data type.
+    public func makeEmpty(_ shape: [Int], _ dtype: DType = .float32) throws -> MTensor {
+        return try MTensor(device: device, shape: shape, dtype: dtype)
     }
 
-    func makeZeros(_ shape: [Int], _ dtype: DType) -> MTensor {
-        let t = makeEmpty(shape, dtype)
+    /// Create a zero-initialized tensor with the given shape and data type.
+    public func makeZeros(_ shape: [Int], _ dtype: DType = .float32) throws -> MTensor {
+        let t = try makeEmpty(shape, dtype)
         t.zero()
         return t
     }
-}
-
-// MARK: - Free functions (bindings.h)
-
-func gpuEmpty(_ shape: [Int], _ dtype: DType = .float32) -> MTensor {
-    MetalContext.current.makeEmpty(shape, dtype)
-}
-
-func gpuZeros(_ shape: [Int], _ dtype: DType = .float32) -> MTensor {
-    MetalContext.current.makeZeros(shape, dtype)
-}
-
-/// Commit current command buffer (non-blocking).
-func msplatCommit() {
-    if !Profiling.gpuTimingChecked {
-        Profiling.gpuTimingEnabled = env("PROFILE_GPU")
-        Profiling.gpuTimingChecked = true
+    
+    // MARK: - GPU capture
+    
+    /// Capture GPU work to a .gputrace document. Needs METAL_CAPTURE_ENABLED=1 at launch.
+    @discardableResult
+    public func beginGpuCapture(path: String) -> Bool {
+        let mgr = MTLCaptureManager.shared()
+        guard mgr.supportsDestination(.gpuTraceDocument) else {
+            logErr("msplat: .gputrace capture unsupported — launch with METAL_CAPTURE_ENABLED=1")
+            return false
+        }
+        // startCapture fails outright if the destination already exists.
+        try? FileManager.default.removeItem(atPath: path)
+        let desc = MTLCaptureDescriptor()
+        desc.captureObject = queue
+        desc.destination = .gpuTraceDocument
+        desc.outputURL = URL(fileURLWithPath: path)
+        do {
+            try mgr.startCapture(with: desc)
+            return true
+        } catch {
+            logErr("msplat: startCapture failed: \(error.localizedDescription)")
+            return false
+        }
     }
-    (try? MetalContext.shared())?.commitCB()
-}
-
-/// Commit + wait.
-func msplatGpuSync() {
-    (try? MetalContext.shared())?.syncCB()
-}
-
-/// Capture GPU work to a .gputrace document. Needs METAL_CAPTURE_ENABLED=1 at launch.
-@discardableResult
-func msplatBeginGpuCapture(path: String) -> Bool {
-    let mgr = MTLCaptureManager.shared()
-    guard mgr.supportsDestination(.gpuTraceDocument) else {
-        logErr("msplat: .gputrace capture unsupported — launch with METAL_CAPTURE_ENABLED=1")
-        return false
-    }
-    guard let ctx = try? MetalContext.shared() else { return false }
-    // startCapture fails outright if the destination already exists.
-    try? FileManager.default.removeItem(atPath: path)
-    let desc = MTLCaptureDescriptor()
-    desc.captureObject = ctx.queue
-    desc.destination = .gpuTraceDocument
-    desc.outputURL = URL(fileURLWithPath: path)
-    do {
-        try mgr.startCapture(with: desc)
-        return true
-    } catch {
-        logErr("msplat: startCapture failed: \(error.localizedDescription)")
-        return false
+    
+    public func endGpuCapture() {
+        MTLCaptureManager.shared().stopCapture()
     }
 }
 
-func msplatEndGpuCapture() {
-    MTLCaptureManager.shared().stopCapture()
-}
+// MARK: - Free functions for profiling and timing
 
 func msplatEnableGpuTiming(_ enable: Bool) {
     Profiling.gpuTimingEnabled = enable

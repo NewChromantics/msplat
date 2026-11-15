@@ -131,6 +131,7 @@ final class Engine
 	var fps: Float = 0
 	var phase : Phase
 	var task : Task<Void,Never>!
+	let metalContext : MetalContext
 	
 	// Memory tracking
 	var memory = MemorySummary(totalMB: 0, efficiency: 0, modelMB: 0, datasetMB: 0, cpuImagesMB: 0, splatCount: 0)
@@ -148,8 +149,9 @@ final class Engine
 		task.cancel()
 	}
 
-	init(datasetPath: URL) 
+	init(datasetPath: URL) throws
 	{
+		metalContext = try MetalContext()
 		phase = .loading("Init", nil)
 		task = Task.detached 
 		{
@@ -161,6 +163,11 @@ final class Engine
 				}
 				
 				let inputData = try await SplatDatasetLoader.load(from: datasetPath, colmapImagePath: nil)
+				
+				await MainActor.run
+				{
+					self.phase = .loading("Generating pyramids",datasetPath)
+				}
 				let splatDataset = try await SplatInputData(from: inputData, downscaleFactor: 1.0)
 				{
 					let newPhase = Phase.loading($0,$1)
@@ -169,12 +176,11 @@ final class Engine
 					}
 				}
 			
-				let totalIterations = await MainActor.run
+				await MainActor.run
 				{
 					self.phase = .training
-					return self.totalIterations
 				}
-				try await self.performTraining(inputData: splatDataset, totalIterations: totalIterations)
+				try await self.performTraining(inputData: splatDataset, totalIterations: self.totalIterations)
 			}
 			catch
 			{
@@ -184,6 +190,14 @@ final class Engine
 				}
 			}
 		}
+	}
+	
+	/// Error state initializer (when Metal context can't be created)
+	init(error: Error) {
+		// Use a dummy context that will never be accessed
+		self.metalContext = try! MetalContext()
+		self.phase = .error(error)
+		self.task = Task { }
 	}
 
 	nonisolated private func performTraining(inputData:SplatInputData, totalIterations: Int) async throws
@@ -195,7 +209,7 @@ final class Engine
 		config.numDownscales = 0
 		config.bgColor = (0, 0, 0)
 		
-		let trainer = try SplatTrainer(dataset: inputData, config: config)
+		let trainer = try SplatTrainer(context:metalContext, dataset: inputData, config: config)
 		
 		// Release inputData reference - trainer owns the dataset now
 		_ = inputData
@@ -207,15 +221,20 @@ final class Engine
 
 		for i in 0..<config.iterations 
 		{
-			let stats = trainer.step()
+			let stats = try await trainer.step()
 			batchSteps += 1
-
+/*
+			await MainActor.run 
+			{
+				self.iteration = Int(i)
+			}*/
+			
 			if i % 30 == 0 || i == config.iterations-1
 			{
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 
-				let splatImg = try trainer.render(cameraIndex: 0, format: .rgba) 
+				let splatImg = try await trainer.render(cameraIndex: 0, format: .rgba) 
 				
 				//	this can be done on another thread
 				do
@@ -345,7 +364,12 @@ struct ContentView: View
 
 	init(datasetPath:URL)
 	{
-		engine = Engine(datasetPath: datasetPath)
+		do {
+			engine = try Engine(datasetPath: datasetPath)
+		} catch {
+			// If context creation fails, create a dummy engine in error state
+			engine = Engine(error: error)
+		}
 	}
 	
     var body: some View 
@@ -468,17 +492,19 @@ struct ContentView: View
 			// Full-width stats bar
 			statsBar
 		}
-		.overlay(alignment: .topTrailing) {
+		.overlay(alignment: .topTrailing) 
+		{
 			// Memory usage overlay in top-right corner
-			memoryOverlay
+			MemoryOverlay()
 				.padding(16)
 		}
 	}
 	
-	// MARK: - Memory Overlay
 	
-	private var memoryOverlay: some View {
-		VStack(alignment: .trailing, spacing: 6) {
+	@ViewBuilder func MemoryStats() -> some View
+	{
+		VStack(alignment: .trailing, spacing: 6) 
+		{
 			Text("GPU MEMORY")
 				.font(.system(size: 10, weight: .bold, design: .monospaced))
 				.foregroundStyle(.white.opacity(0.6))
@@ -498,6 +524,7 @@ struct ContentView: View
 			
 			if showDetailedMemory {
 				Divider()
+					.frame(maxWidth:100)
 					.background(.white.opacity(0.3))
 					.padding(.vertical, 4)
 				
@@ -514,17 +541,21 @@ struct ContentView: View
 				.foregroundStyle(.white.opacity(0.4))
 				.padding(.top, 4)
 		}
-		.padding(12)
-		.background {
-			RoundedRectangle(cornerRadius: 8)
-				.fill(.black.opacity(0.75))
-				.overlay {
-					RoundedRectangle(cornerRadius: 8)
-						.strokeBorder(memoryColor.opacity(0.3), lineWidth: 1)
-				}
-		}
-		.shadow(color: .black.opacity(0.3), radius: 8)
-		.animation(.easeInOut(duration: 0.2), value: showDetailedMemory)
+	}
+	
+	@ViewBuilder func MemoryOverlay() -> some View 
+	{
+		MemoryStats()
+			.padding(12)
+			.background {
+				RoundedRectangle(cornerRadius: 8)
+					.fill(.black.opacity(0.75))
+					.overlay {
+						RoundedRectangle(cornerRadius: 8)
+							.strokeBorder(memoryColor.opacity(0.3), lineWidth: 1)
+					}
+			}
+
 	}
 	
 	private var memoryColor: Color {
