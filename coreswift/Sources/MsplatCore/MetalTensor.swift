@@ -46,9 +46,23 @@ final class CPUStorage {
     deinit { pointer.deallocate() }
 }
 
-public struct MTensor {
-    private(set) var buffer: MTLBuffer?
-    private var cpuStorage: CPUStorage?
+public struct MTensor 
+{
+	var buffer: MTLBuffer?
+	{
+		didSet
+		{
+			OnStorageChanged()
+		}
+	}
+
+	var cpuStorage: CPUStorage?
+	{
+		didSet
+		{
+			OnStorageChanged()
+		}
+	}
     private(set) var shape: [Int] = []
     private(set) var dtype: DType = .float32
     private(set) var numel: Int = 0
@@ -151,4 +165,12 @@ public struct MTensor {
         guard !array.isEmpty else { return }
         array.withUnsafeBytes { copyIn($0.baseAddress!, byteCount: $0.count) }
     }
+	
+	func OnStorageChanged()
+	{
+		if self.buffer != nil && self.cpuStorage != nil
+		{
+			print("Tensor with gpu & cpu data")
+		}
+	}
 }
