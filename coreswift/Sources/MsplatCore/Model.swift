@@ -412,7 +412,12 @@ final class Model
                 var rng = MT19937(seed: UInt32(truncatingIfNeeded: step))
                 var dist = NormalFloat(mean: 0, stddev: 1)
                 let p = densifyRandomSamples.floats()
-                for i in 0..<(2 * numActive * 3) { p[i] = dist.sample(&rng) }
+				let pointCount = 2 * numActive * 3
+				print("Calulating \(pointCount) random number samples")
+                for i in 0..<pointCount
+				{
+					p[i] = dist.sample(&rng) 
+				}
             }
 
             let checkHuge = step > refineEvery * resetAlphaEvery

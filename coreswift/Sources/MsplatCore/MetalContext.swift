@@ -7,6 +7,14 @@ import Metal
 import MetalPerformanceShaders
 import PopCommon
 
+
+struct GpuExecuteStats
+{
+	var name : String
+	var gpuExecutionDurationMs : Int
+	var gpuScheduleDurationMs : Int
+}
+
 // MARK: - Profiling state (PROFILE_GPU / PROFILE_STAGES)
 
 let trainStageNames = [
@@ -221,21 +229,25 @@ public final class MetalContext : @unchecked Sendable
     /// Execute GPU work asynchronously and wait for completion.
     /// Pass a closure that encodes work into the command buffer.
     @discardableResult
-	func executeAsync(_ work: (MTLCommandBuffer) throws -> Void) async throws -> MTLCommandBuffer 
+	func executeAsync(jobName:String,_ work: (MTLCommandBuffer) throws -> Void) async throws -> GpuExecuteStats 
 	{
-        let cb = makeCommandBufferWithTiming()
-        try work(cb)
+		let cb = makeCommandBufferWithTiming()
+		try work(cb)
 		
-		let promise = SendablePromise<Void>()
+		let promise = SendablePromise<GpuExecuteStats>()
 		cb.addCompletedHandler 
 		{
 			completionMeta in
-			promise.Resolve(Void())
+			let executeMs = (completionMeta.gpuEndTime - completionMeta.gpuStartTime) * 1000.0
+			let scheduleMs = (completionMeta.kernelEndTime - completionMeta.kernelStartTime) * 1000.0
+			let meta = GpuExecuteStats(name: jobName, gpuExecutionDurationMs:Int(executeMs), gpuScheduleDurationMs: Int(scheduleMs) )
+			promise.Resolve(meta)
 		}
-        cb.commit()
-		try await promise.value
-		return cb
-    }
+		cb.commit()
+		let stats = try await promise.value
+		print("\(jobName) took \(stats.gpuExecutionDurationMs)ms (\(stats.gpuScheduleDurationMs)ms setup)")
+		return stats
+	}
 
     // MARK: - Tensor creation
     

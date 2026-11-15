@@ -435,7 +435,7 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
     }
 
     // Execute render and wait for completion
-    try await ctx.executeAsync 
+    try await ctx.executeAsync(jobName: "Render")
 	{
 		cb in
         // Zero accumulating buffers on the GPU (a CPU memset would race the previous CB).
@@ -474,7 +474,7 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
         && gTensorCache.tileScatterCounters.defined && gTensorCache.fwdNumPoints > 0
         && benchmarkEnabled {
         // Sync to read diagnostic data
-        try await ctx.executeAsync { _ in }
+       // try await ctx.executeAsync { _ in }
         let c = gTensorCache
         let counts = c.tileScatterCounters.int32s()
         let ntPrev = c.tileScatterCounters.numel
@@ -678,7 +678,7 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
     }
 
     // Execute training step and wait for completion
-    try await ctx.executeAsync 
+    try await ctx.executeAsync(jobName: "Train")
 	{
 		cb in
         if Profiling.profileStages && ctx.counterSamplingAvailable, let csb = ctx.counterSampleBuffer {
@@ -826,7 +826,7 @@ func msplatDensify(_ d: DensifyParams, _ ctx: MetalContext) async throws -> Int 
     let frStride = Int32(d.frStride)
 
     // Execute densification and wait for completion
-    try await ctx.executeAsync 
+    try await ctx.executeAsync(jobName: "Denisfy")
 	{
 		cb in
         let enc = cb.makeComputeCommandEncoder()!
