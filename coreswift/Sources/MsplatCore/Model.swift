@@ -119,12 +119,17 @@ final class Model
 {
     static let nAdamGroups = 6
 
-    // Metal context for GPU operations
+    //	Metal context for GPU operations
     let metalContext: MetalContext
 
-    // Active views (first numActive rows of the *_buf backing buffers)
-    var means = MTensor(), scales = MTensor(), quats = MTensor()
-    var featuresDc = MTensor(), featuresRest = MTensor(), opacities = MTensor()
+    //	Active views (first numActive rows of the *_buf backing buffers)
+	var numPoints : Int		{	means.size(0)	}
+    var means = MTensor()	//	positions
+	var scales = MTensor()	//	log scale
+	var quats = MTensor()	//	wxyz
+    var featuresDc = MTensor()
+	var featuresRest = MTensor()
+	var opacities = MTensor()	//	log^sigmoid
 
     var adamExpAvg = [MTensor](repeating: MTensor(), count: nAdamGroups)
     var adamExpAvgSq = [MTensor](repeating: MTensor(), count: nAdamGroups)
@@ -678,6 +683,34 @@ final class Model
 		return try await msplatRender(renderParams(cam, s, channels:channels), metalContext)
     }
 
+	
+	func GetSplats() -> [PlySplatPoint]
+	{
+		//	todo: use gpu buffers
+		refreshViews()
+		
+		let positions = means.float3s()
+		let scales = scales.float3s()
+		let quats = quats.float4s()
+		let opacitys = opacities.floats()
+		let featureDcs = featuresDc.float3s()
+		let featureRests = featuresRest.floats()
+		
+		let points = (0..<numPoints).map
+		{
+			i in
+			let pos = positions[i]
+			let scale = scales[i]
+			let quat = quats[i]
+			let opacity = opacitys[i]
+			let featureDc = featureDcs[i]
+			let splat = PlySplatPoint(position: pos, quaternionWxyz: quat, scaleLog: scale, opacityLogit: opacity, shDc: featureDc)
+			return splat
+		}
+
+		return points
+	}
+	
 	func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) async throws 
 	{
         let s = try prepareCam(cam, step: step)

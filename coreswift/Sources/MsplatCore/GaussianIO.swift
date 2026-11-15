@@ -40,27 +40,43 @@ func saveGaussianPly(_ path: String, _ p: GaussianParams, step: Int) throws
 
     let floatsPerRow = 3 + 3 + numDc + numFr + 1 + 3 + 4
     var body = [Float](repeating: 0, count: N * floatsPerRow)
-    let mp = p.means.floats(), sp = p.scales.floats(), qp = p.quats.floats()
-    let dp = p.featuresDc.floats(), op = p.opacities.floats(), frp = p.featuresRest.floats()
+    let mp = p.means.floats()
+	let sp = p.scales.floats()
+	let qp = p.quats.floats()
+    let dp = p.featuresDc.floats()
+	let op = p.opacities.floats() 
+	let frp = p.featuresRest.floats()
     let tr = [p.translation.0, p.translation.1, p.translation.2]
 
-    body.withUnsafeMutableBufferPointer { out in
-        for i in 0..<N {
+    body.withUnsafeMutableBufferPointer 
+	{
+		out in
+        for i in 0..<N 
+		{
             var c = i * floatsPerRow
-            for j in 0..<3 {
-                out[c] = p.keepCrs ? (mp[i * 3 + j] / p.scale + tr[j]) : mp[i * 3 + j]; c += 1
+            for j in 0..<3 
+			{
+                out[c] = p.keepCrs ? (mp[i * 3 + j] / p.scale + tr[j]) : mp[i * 3 + j]
+				c += 1
             }
             c += 3 // normals = 0
             for j in 0..<numDc { out[c] = dp[i * numDc + j]; c += 1 }
             // Transpose [frBases, 3] → [3, frBases] for PLY convention
-            for ch in 0..<3 {
+            for ch in 0..<3 
+			{
                 for b in 0..<frBases { out[c] = frp[i * frBases * 3 + b * 3 + ch]; c += 1 }
             }
-            out[c] = op[i]; c += 1
-            for j in 0..<3 {
+            out[c] = op[i]
+			c += 1
+            for j in 0..<3 
+			{
                 out[c] = p.keepCrs ? logf(expf(sp[i * 3 + j]) / p.scale) : sp[i * 3 + j]; c += 1
             }
-            for j in 0..<4 { out[c] = qp[i * 4 + j]; c += 1 }
+            for j in 0..<4 
+			{
+				out[c] = qp[i * 4 + j]
+				c += 1 
+			}
         }
     }
 

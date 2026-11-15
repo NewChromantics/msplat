@@ -124,6 +124,7 @@ final class Engine
 {
 	//	last Nth step render
 	var image: CGImage?
+	var splats : [PlySplatPoint] = []
 	
 	var iteration: Int = 0
 	var totalIterations: Int = 10_000
@@ -220,6 +221,7 @@ final class Engine
 		var batchSteps = 0
 		let startTime = CACurrentMediaTime()
 		var batchStart = startTime
+		var renderCameraIndex = 0
 
 		for i in 0..<config.iterations 
 		{
@@ -238,12 +240,15 @@ final class Engine
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 
-				let splatImg = try await trainer.render(cameraIndex: 0, format: .rgba) 
+				let splatRender = try await trainer.render(cameraIndex: renderCameraIndex % inputData.numCameras, format: .rgba)
+				renderCameraIndex += 1
+				
+				let splats = trainer.GetSplats()
 				
 				//	this can be done on another thread
 				do
 				{
-					let cgImage = try splatImg.makeCGImage(useFloatComponents: true)
+					let cgImage = try splatRender.makeCGImage(useFloatComponents: true)
 					let iter = Int(stats.iteration)
 					let count = Int(stats.splatCount)
 					let elapsedSecs = batchEnd - startTime
@@ -259,6 +264,7 @@ final class Engine
 						await MainActor.run 
 						{
 							self.image = cgImage
+							self.splats = splats
 							self.iteration = iter
 							self.splatCount = count
 							self.msPerStep = avgMs

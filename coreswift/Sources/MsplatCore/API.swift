@@ -3,10 +3,43 @@ import NerfStudioData
 import ColmapData
 import PolycamData
 import Accelerate
+import simd
+
+
+//	can we use simd_half3?
+struct PackedHalf3 
+{
+	var x: Float16
+	var y: Float16
+	var z: Float16
+}
+
+//	simd_half4
+struct PackedRGBHalf4 {
+	var r: Float16
+	var g: Float16
+	var b: Float16
+	var a: Float16
+}
 
 
 
-public struct MsplatConfig {
+public struct PlySplatPoint : Sendable
+{
+	var position : simd_float3
+	var quaternionWxyz : simd_float4
+	var rotation : simd_quatf		{	simd_normalize( simd_quatf(ix: quaternionWxyz.y, iy: quaternionWxyz.z, iz: quaternionWxyz.w, r: quaternionWxyz.x) )	}
+	var scaleLog : simd_float3
+	var scale : simd_float3			{	simd_float3( exp(scaleLog.x), exp(scaleLog.y), exp(scaleLog.z) )	}
+	var opacityLogit : Float
+	var opacity : Float				{	1 / (1 + exp(-opacityLogit))	}
+	var shDc : simd_float3
+	var colour : simd_float3		{	simd_clamp( 0.5 + 0.28209479 * shDc, simd_float3(repeating: 0), simd_float3(repeating: 1) )	}
+}
+
+
+public struct MsplatConfig 
+{
     public var iterations: Int32 = 30_000
     public var shDegree: Int32 = 3
     public var shDegreeInterval: Int32 = 1_000
@@ -219,7 +252,8 @@ public final class SplatTrainer {
         // Render executes its own GPU work and waits for completion
         let rgb = try await model.render(cam, step: currentStep, channels: format.channels)
         
-        let h = rgb.size(0), w = rgb.size(1)
+        let h = rgb.size(0)
+		let w = rgb.size(1)
 		let pixels = Array(UnsafeBufferPointer(start: rgb.floats(), count: h * w * format.channels))
         return try RGBImage(data: pixels, width: w, height: h, format: format)
     }
@@ -233,6 +267,11 @@ public final class SplatTrainer {
 		}
 		return try await renderToImage(dataset.cameras[cameraIndex], format: format)
     }
+	
+	public func GetSplats() -> [PlySplatPoint]
+	{
+		return model.GetSplats()
+	}
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
     private func GetNewRuntimeCamera(_ camToWorld: [Float], _ refCameraIndex: Int) throws -> RuntimeCamera

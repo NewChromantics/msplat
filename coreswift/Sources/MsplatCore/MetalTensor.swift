@@ -1,16 +1,7 @@
-// Port of include/metal_tensor.hpp
-//
-// MTensor is a lightweight tensor: shape metadata over either a shared-storage
-// MTLBuffer (GPU, CPU-visible on Apple Silicon) or a plain CPU allocation.
-//
-// Semantics vs. the C++ class:
-//  * Copies share storage (the C++ copy constructor CFRetains the buffer); same here
-//    via ARC on the buffer / storage object.
-//  * view(n) in C++ is NON-owning and can dangle. Here a view retains the buffer, so
-//    it can't outlive its storage. Behaviour is otherwise identical.
-
 import Foundation
 import Metal
+import simd
+
 
 public enum DType: UInt8 {
     case float32, int32, int64, uint8, float64
@@ -124,6 +115,10 @@ public struct MTensor
 
     func floats() -> UnsafeMutablePointer<Float> { pointer(Float.self) }
     func int32s() -> UnsafeMutablePointer<Int32> { pointer(Int32.self) }
+	func float2s() -> UnsafeMutablePointer<simd_float2> { pointer(simd_float2.self) }
+	func float3s() -> UnsafeMutablePointer<simd_float3> { pointer(simd_float3.self) }
+	func float4s() -> UnsafeMutablePointer<simd_float4> { pointer(simd_float4.self) }
+	func quat4s() -> UnsafeMutablePointer<simd_quatf> { pointer(simd_quatf.self) }
 
     func zero() {
         guard defined else { return }
