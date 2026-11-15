@@ -171,7 +171,7 @@ func cleanupMsplatMetal() {
 // MARK: - Shared parameters
 
 /// Per-view camera/render parameters shared by render and train step.
-struct RenderParams {
+public struct RenderParams {
     var numPoints: Int
     var means3d: MTensor
     var scales: MTensor
@@ -193,7 +193,7 @@ struct RenderParams {
 }
 
 /// Training-only inputs to the fused step.
-struct TrainParams {
+public struct TrainParams {
     var gt: MTensor
     var window2d: MTensor
     var ssimWeight: Float
@@ -774,7 +774,7 @@ private func pad20(_ s: String) -> String {
 
 // MARK: - GPU densification
 
-struct DensifyParams {
+public struct DensifyParams {
     var n: Int
     var bufCapacity: Int
     var gradThresh: Float, sizeThresh: Float, screenThresh: Float

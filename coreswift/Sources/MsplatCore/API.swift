@@ -302,6 +302,62 @@ public final class SplatTrainer {
 
     public var splatCount: Int { model.means.size(0) }
     public var iteration: Int { currentStep }
+    
+    // MARK: - GPU Memory Tracking
+    
+    /// Get detailed GPU memory usage breakdown from the model
+    public func getGPUMemoryBreakdown() -> GPUMemoryBreakdown {
+        model.getGPUMemoryBreakdown()
+    }
+    
+    /// Get total GPU memory usage in bytes (model + dataset caches)
+    public var totalGPUMemoryUsage: Int {
+        model.gpuMemoryUsage + Int(dataset.totalGPUMemoryUsage)
+    }
+    
+    /// Get total GPU memory usage in megabytes
+    public var totalGPUMemoryUsageMB: Double {
+        Double(totalGPUMemoryUsage) / (1024.0 * 1024.0)
+    }
+    
+    /// Get model-only GPU memory usage in bytes
+    public var modelGPUMemoryUsage: Int {
+        model.gpuMemoryUsage
+    }
+    
+    /// Get model-only GPU memory usage in megabytes
+    public var modelGPUMemoryUsageMB: Double {
+        model.gpuMemoryUsageMB
+    }
+    
+    /// Get dataset cache GPU memory usage in megabytes
+    public var datasetGPUMemoryUsageMB: Double {
+        dataset.totalGPUMemoryUsageMB
+    }
+    
+    /// Get dataset CPU image memory usage in megabytes
+    public var datasetCPUMemoryUsageMB: Double {
+        dataset.totalCPUImageMemoryMB
+    }
+    
+    /// Get memory efficiency (percentage of allocated capacity actually used)
+    public var memoryEfficiency: Double {
+        model.memoryEfficiency
+    }
+    
+    /// Print comprehensive GPU memory report to console
+    public func printGPUMemoryReport() {
+        print("═══════════════════════════════════════════════════════")
+        print("           GPU MEMORY REPORT")
+        print("═══════════════════════════════════════════════════════")
+        print("")
+        model.printGPUMemoryReport()
+        print("")
+        print("Dataset Caches:       \(String(format: "%.2f MB", datasetGPUMemoryUsageMB))")
+        print("───────────────────────────────────────────────────────")
+        print("Grand Total:          \(String(format: "%.2f MB", totalGPUMemoryUsageMB))")
+        print("═══════════════════════════════════════════════════════")
+    }
 }
 
 /// (uint8_t)(fminf(fmaxf(v, 0), 1) * 255) — NaN maps to 0 like fmaxf.

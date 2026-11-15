@@ -12,7 +12,7 @@
 import Foundation
 import Metal
 
-enum DType: UInt8 {
+public enum DType: UInt8 {
     case float32, int32, int64, uint8, float64
 
     var size: Int {
@@ -24,11 +24,11 @@ enum DType: UInt8 {
     }
 }
 
-struct MsplatError: LocalizedError
+public struct MsplatError: LocalizedError
 {
-	let errorDescription : String?
+	public let errorDescription : String?
 
-	init(_ message: String)
+	public init(_ message: String)
 	{
 		errorDescription = message 
 	}
@@ -46,7 +46,7 @@ final class CPUStorage {
     deinit { pointer.deallocate() }
 }
 
-struct MTensor {
+public struct MTensor {
     private(set) var buffer: MTLBuffer?
     private var cpuStorage: CPUStorage?
     private(set) var shape: [Int] = []

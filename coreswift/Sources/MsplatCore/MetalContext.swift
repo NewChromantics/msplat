@@ -43,7 +43,7 @@ func msplatSetMetallibPath(_ path: String?) {
 
 // MARK: - Context
 
-final class MetalContext {
+public final class MetalContext {
     let device: MTLDevice
     let queue: MTLCommandQueue
 

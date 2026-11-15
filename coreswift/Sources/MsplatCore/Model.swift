@@ -69,7 +69,54 @@ func numShBases(_ degree: Int) -> Int {
     }
 }
 
-final class Model {
+
+/// Detailed breakdown of GPU memory usage by component
+public struct GPUMemoryBreakdown {
+	public var gaussianParams: Int = 0      // means, scales, quats, features, opacities
+	public var gaussianBuffers: Int = 0      // backing buffers (*Buf)
+	public var adamState: Int = 0            // adamExpAvg, adamExpAvgSq
+	public var adamBuffers: Int = 0          // adamExpAvgBuf, adamExpAvgSqBuf
+	public var densificationScratch: Int = 0 // all densify* tensors
+	public var trainingState: Int = 0        // xysGradNorm, visCounts, max2DSize, radii
+	public var other: Int = 0                // backgroundColor, window2d
+	
+	public var total: Int {
+		gaussianParams + gaussianBuffers + adamState + adamBuffers + 
+		densificationScratch + trainingState + other
+	}
+	
+	public var totalMB: Double { Double(total) / (1024.0 * 1024.0) }
+	
+	public var description: String {
+			"""
+			GPU Memory Breakdown:
+			  Gaussian Params:      \(formatBytes(gaussianParams))
+			  Gaussian Buffers:     \(formatBytes(gaussianBuffers))
+			  Adam State:           \(formatBytes(adamState))
+			  Adam Buffers:         \(formatBytes(adamBuffers))
+			  Densification Scratch:\(formatBytes(densificationScratch))
+			  Training State:       \(formatBytes(trainingState))
+			  Other:                \(formatBytes(other))
+			  ─────────────────────────────────
+			  Total:                \(formatBytes(total)) (\(String(format: "%.1f", totalMB)) MB)
+			"""
+	}
+	
+	private func formatBytes(_ bytes: Int) -> String {
+		if bytes >= 1024 * 1024 * 1024 {
+			return String(format: "%6.2f GB", Double(bytes) / (1024.0 * 1024.0 * 1024.0))
+		} else if bytes >= 1024 * 1024 {
+			return String(format: "%6.2f MB", Double(bytes) / (1024.0 * 1024.0))
+		} else if bytes >= 1024 {
+			return String(format: "%6.2f KB", Double(bytes) / 1024.0)
+		} else {
+			return String(format: "%6d B ", bytes)
+		}
+	}
+}
+
+final class Model
+{
     static let nAdamGroups = 6
 
     // Active views (first numActive rows of the *_buf backing buffers)
@@ -124,6 +171,15 @@ final class Model {
 
     var scale: Float
     var translation: (Float, Float, Float)
+
+    deinit {
+        releaseOptimizers()
+        // Release remaining GPU tensors
+        means.reset(); scales.reset(); quats.reset()
+        featuresDc.reset(); featuresRest.reset(); opacities.reset()
+        backgroundColor.reset(); window2d.reset()
+        radii.reset(); xysGradNorm.reset(); visCounts.reset(); max2DSize.reset()
+    }
 
     init(inputData: SplatInputData, numCameras: Int, numDownscales: Int, resolutionSchedule: Int,
          shDegree: Int, shDegreeInterval: Int, refineEvery: Int, warmupLength: Int,
@@ -259,6 +315,9 @@ final class Model {
     }
 
     func releaseOptimizers() {
+        // Ensure all GPU operations complete before releasing buffers
+        msplatGpuSync()
+        
         for g in 0..<Model.nAdamGroups {
             adamExpAvg[g].reset(); adamExpAvgSq[g].reset()
             adamExpAvgBuf[g].reset(); adamExpAvgSqBuf[g].reset()
@@ -300,6 +359,13 @@ final class Model {
             memcpy(nb.rawPointer, buf.rawPointer, numActive * buf.stride0 * MemoryLayout<Float>.size)
             return nb
         }
+        
+        // Release old densification scratch buffers BEFORE allocating new ones
+        densifySplitFlag.reset(); densifyDupFlag.reset()
+        densifySplitPrefix.reset(); densifyDupPrefix.reset()
+        densifyKeepFlag.reset(); densifyKeepPrefix.reset()
+        densifyBlockTotals.reset(); densifyCompactScratch.reset(); densifyRandomSamples.reset()
+        
         meansBuf = grow(meansBuf); scalesBuf = grow(scalesBuf); quatsBuf = grow(quatsBuf)
         featuresDcBuf = grow(featuresDcBuf); featuresRestBuf = grow(featuresRestBuf)
         opacitiesBuf = grow(opacitiesBuf)
@@ -624,4 +690,94 @@ final class Model {
             invMaxDim: invMaxDim))
         radii = r
     }
+    
+    
+    /// Get detailed GPU memory usage breakdown
+    func getGPUMemoryBreakdown() -> GPUMemoryBreakdown {
+        var breakdown = GPUMemoryBreakdown()
+        
+        // Gaussian parameters (active views)
+        breakdown.gaussianParams += means.nbytes
+        breakdown.gaussianParams += scales.nbytes
+        breakdown.gaussianParams += quats.nbytes
+        breakdown.gaussianParams += featuresDc.nbytes
+        breakdown.gaussianParams += featuresRest.nbytes
+        breakdown.gaussianParams += opacities.nbytes
+        
+        // Gaussian backing buffers
+        breakdown.gaussianBuffers += meansBuf.nbytes
+        breakdown.gaussianBuffers += scalesBuf.nbytes
+        breakdown.gaussianBuffers += quatsBuf.nbytes
+        breakdown.gaussianBuffers += featuresDcBuf.nbytes
+        breakdown.gaussianBuffers += featuresRestBuf.nbytes
+        breakdown.gaussianBuffers += opacitiesBuf.nbytes
+        
+        // Adam state (active views)
+        for g in 0..<Model.nAdamGroups {
+            breakdown.adamState += adamExpAvg[g].nbytes
+            breakdown.adamState += adamExpAvgSq[g].nbytes
+        }
+        
+        // Adam backing buffers
+        for g in 0..<Model.nAdamGroups {
+            breakdown.adamBuffers += adamExpAvgBuf[g].nbytes
+            breakdown.adamBuffers += adamExpAvgSqBuf[g].nbytes
+        }
+        
+        // Densification scratch
+        breakdown.densificationScratch += densifySplitFlag.nbytes
+        breakdown.densificationScratch += densifyDupFlag.nbytes
+        breakdown.densificationScratch += densifySplitPrefix.nbytes
+        breakdown.densificationScratch += densifyDupPrefix.nbytes
+        breakdown.densificationScratch += densifyKeepFlag.nbytes
+        breakdown.densificationScratch += densifyKeepPrefix.nbytes
+        breakdown.densificationScratch += densifyBlockTotals.nbytes
+        breakdown.densificationScratch += densifyCompactScratch.nbytes
+        breakdown.densificationScratch += densifyRandomSamples.nbytes
+        
+        // Training state
+        breakdown.trainingState += xysGradNorm.nbytes
+        breakdown.trainingState += visCounts.nbytes
+        breakdown.trainingState += max2DSize.nbytes
+        breakdown.trainingState += radii.nbytes
+        
+        // Other
+        breakdown.other += backgroundColor.nbytes
+        breakdown.other += window2d.nbytes
+        
+        return breakdown
+    }
+    
+    /// Get total GPU memory usage in bytes
+    var gpuMemoryUsage: Int {
+        getGPUMemoryBreakdown().total
+    }
+    
+    /// Get GPU memory usage in megabytes
+    var gpuMemoryUsageMB: Double {
+        Double(gpuMemoryUsage) / (1024.0 * 1024.0)
+    }
+    
+    /// Get per-Gaussian memory usage estimate in bytes
+    var bytesPerGaussian: Int {
+        guard numActive > 0 else { return 0 }
+        return gpuMemoryUsage / numActive
+    }
+    
+    /// Get memory efficiency (percentage of allocated buffer capacity that's actually used)
+    var memoryEfficiency: Double {
+        guard bufCapacity > 0 else { return 0.0 }
+        return Double(numActive) / Double(bufCapacity) * 100.0
+    }
+    
+    /// Print detailed GPU memory report to console
+    func printGPUMemoryReport() {
+        let breakdown = getGPUMemoryBreakdown()
+        print(breakdown.description)
+        print("Active Gaussians:     \(numActive)")
+        print("Buffer Capacity:      \(bufCapacity)")
+        print("Memory Efficiency:    \(String(format: "%.1f%%", memoryEfficiency))")
+        print("Bytes per Gaussian:   \(bytesPerGaussian)")
+    }
 }
+

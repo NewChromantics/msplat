@@ -14,7 +14,7 @@ public enum ImageSource
 		switch self
 		{
 			case .url(let url):	return url
-			case .data(let data):	return nil
+			case .data(_):		return nil
 		}
 	}
 }
@@ -48,6 +48,11 @@ public final class RuntimeCamera
     var cachedViewMat = MTensor(), cachedProjViewMat = MTensor()
     var cachedCamPos: (Float, Float, Float) = (0, 0, 0)
     var cachedFovX: Float = 0, cachedFovY: Float = 0
+
+    deinit {
+        // Clean up GPU cached data to prevent memory leaks
+        clearGPUCache()
+    }
 
 	public init(meta: CameraMeta, downscaleFactor: Float = 1.0,copyImage:RGBImage?=nil) throws 
 	{
@@ -150,6 +155,44 @@ public final class RuntimeCamera
         gpuImageCache[downscaleFactor] = mt
         return mt
     }
+    
+    /// Clear all GPU cached images and matrices to free memory.
+    func clearGPUCache() {
+        for (_, var tensor) in gpuImageCache {
+            tensor.reset()
+        }
+        gpuImageCache.removeAll()
+        
+        cachedViewMat.reset()
+        cachedProjViewMat.reset()
+    }
+    
+    /// Clear GPU cached images for specific downscale factors (keeping others).
+    func clearGPUCacheExcept(_ keepDownscale: Int) {
+        let keysToRemove = gpuImageCache.keys.filter { $0 != keepDownscale }
+        for key in keysToRemove {
+            if var tensor = gpuImageCache[key] {
+                tensor.reset()
+            }
+            gpuImageCache.removeValue(forKey: key)
+        }
+    }
+    
+    /// Clear CPU image pyramids to free memory (will be regenerated if needed).
+    func clearImagePyramids() {
+        imagePyramids.removeAll()
+    }
+    
+    /// Get current GPU memory usage estimate in bytes.
+    var gpuMemoryUsage: Int {
+        var total = 0
+        for (_, tensor) in gpuImageCache {
+            total += tensor.nbytes
+        }
+        total += cachedViewMat.nbytes
+        total += cachedProjViewMat.nbytes
+        return total
+    }
 }
 
 struct Points {
@@ -190,6 +233,11 @@ public final class SplatInputData {
     
     /// Number of cameras in the dataset
     public var numCameras: Int { cameras.count }
+    
+    deinit {
+        // Clean up all camera GPU caches when dataset is deallocated
+        clearAllGPUCaches()
+    }
     
     init()
 	{
@@ -320,6 +368,58 @@ public final class SplatInputData {
         result.points = newPoints
         
         return result
+    }
+    
+    // MARK: - Memory Management
+    
+    /// Clear all GPU caches across all cameras to free memory.
+    public func clearAllGPUCaches() {
+        for camera in cameras {
+            camera.clearGPUCache()
+        }
+    }
+    
+    /// Clear GPU caches for all cameras except the specified downscale factor.
+    /// Useful during training to keep only the current resolution cached.
+    public func clearGPUCachesExcept(_ keepDownscale: Int) {
+        for camera in cameras {
+            camera.clearGPUCacheExcept(keepDownscale)
+        }
+    }
+    
+    /// Clear all CPU image pyramids to free memory (they'll be regenerated if needed).
+    public func clearAllImagePyramids() {
+        for camera in cameras {
+            camera.clearImagePyramids()
+        }
+    }
+    
+    /// Get total GPU memory usage estimate across all cameras in bytes.
+    public var totalGPUMemoryUsage: Int {
+        cameras.reduce(0) { $0 + $1.gpuMemoryUsage }
+    }
+    
+    /// Get GPU memory usage estimate in megabytes.
+    public var totalGPUMemoryUsageMB: Double {
+        Double(totalGPUMemoryUsage) / (1024.0 * 1024.0)
+    }
+    
+    /// Get CPU memory usage from loaded images in bytes.
+    public var totalCPUImageMemory: Int {
+        cameras.reduce(0) { total, camera in
+            // Each RGBImage has width * height * 3 (RGB) floats
+            let imageBytes = camera.image.width * camera.image.height * 3 * MemoryLayout<Float>.size
+            // Add pyramid images
+            let pyramidBytes = camera.imagePyramids.values.reduce(0) { sum, img in
+                sum + (img.width * img.height * 3 * MemoryLayout<Float>.size)
+            }
+            return total + imageBytes + pyramidBytes
+        }
+    }
+    
+    /// Get CPU memory usage in megabytes.
+    public var totalCPUImageMemoryMB: Double {
+        Double(totalCPUImageMemory) / (1024.0 * 1024.0)
     }
 }
 

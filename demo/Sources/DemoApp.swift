@@ -104,6 +104,20 @@ func computeOrbitParams(_ poses: [[Float]]) -> OrbitParams {
 
 // MARK: - Engine
 
+struct MemorySummary: Sendable {
+	var totalMB: Double
+	var efficiency: Double
+	var modelMB: Double
+	var datasetMB: Double
+	var cpuImagesMB: Double
+	var splatCount: Int
+	
+	var mbPerSplat: Double {
+		guard splatCount > 0 else { return 0 }
+		return modelMB / Double(splatCount)
+	}
+}
+
 @MainActor
 @Observable
 final class Engine
@@ -117,6 +131,9 @@ final class Engine
 	var fps: Float = 0
 	var phase : Phase
 	var task : Task<Void,Never>!
+	
+	// Memory tracking
+	var memory = MemorySummary(totalMB: 0, efficiency: 0, modelMB: 0, datasetMB: 0, cpuImagesMB: 0, splatCount: 0)
 
 	enum Phase
 	{
@@ -179,6 +196,9 @@ final class Engine
 		config.bgColor = (0, 0, 0)
 		
 		let trainer = try SplatTrainer(dataset: inputData, config: config)
+		
+		// Release inputData reference - trainer owns the dataset now
+		_ = inputData
 
 		// Phase 1: Training
 		var batchSteps = 0
@@ -204,6 +224,14 @@ final class Engine
 					let iter = Int(stats.iteration)
 					let count = Int(stats.splatCount)
 					let elapsedSecs = batchEnd - startTime
+					let memory = MemorySummary(
+						totalMB: trainer.totalGPUMemoryUsageMB + trainer.datasetCPUMemoryUsageMB,
+						efficiency: trainer.memoryEfficiency,
+						modelMB: trainer.modelGPUMemoryUsageMB,
+						datasetMB: trainer.datasetGPUMemoryUsageMB,
+						cpuImagesMB: trainer.datasetCPUMemoryUsageMB,
+						splatCount: count
+					)
 					await MainActor.run 
 					{
 						self.image = cgImage
@@ -211,6 +239,7 @@ final class Engine
 						self.splatCount = count
 						self.msPerStep = avgMs
 						self.elapsedSecs = Float(elapsedSecs)
+						self.memory = memory
 					}
 				}
 				catch
@@ -312,6 +341,7 @@ extension CGImage
 struct ContentView: View
 {
 	@State var engine : Engine
+	@State private var showDetailedMemory = true
 
 	init(datasetPath:URL)
 	{
@@ -336,6 +366,17 @@ struct ContentView: View
 				case .training, .orbiting:			TrainingView()
 				case .error(let error):				ErrorView(error: error)
 			}
+		}
+		.onKeyPress(.init("m")) {
+			// Toggle detailed memory display
+			showDetailedMemory.toggle()
+			return .handled
+		}
+		.onKeyPress(.init("p")) {
+			// Print memory stats to console
+			print("GPU Memory: \(engine.memory.totalMB) MB (Model: \(engine.memory.modelMB) MB, Dataset: \(engine.memory.datasetMB) MB)")
+			print("Efficiency: \(engine.memory.efficiency)%")
+			return .handled
 		}
 	}
 
@@ -372,7 +413,9 @@ struct ContentView: View
                 Text("step \(engine.iteration) / \(engine.totalIterations)")
                 Text("\(fmtCount(engine.splatCount)) splats")
                 Text(String(format: "%.1f ms/step", engine.msPerStep))
-					Text("Elapsed \(Int(engine.elapsedSecs))secs")
+				Text("Elapsed \(Int(engine.elapsedSecs))secs")
+				Text(String(format: "GPU: %.0f MB", engine.memory.totalMB))
+					.foregroundStyle(memoryColor.opacity(0.9))
             case .orbiting:
                 Text("\(fmtCount(engine.splatCount)) splats")
                 Text(String(format: "%.0f fps", engine.fps))
@@ -425,6 +468,90 @@ struct ContentView: View
 			// Full-width stats bar
 			statsBar
 		}
+		.overlay(alignment: .topTrailing) {
+			// Memory usage overlay in top-right corner
+			memoryOverlay
+				.padding(16)
+		}
+	}
+	
+	// MARK: - Memory Overlay
+	
+	private var memoryOverlay: some View {
+		VStack(alignment: .trailing, spacing: 6) {
+			Text("GPU MEMORY")
+				.font(.system(size: 10, weight: .bold, design: .monospaced))
+				.foregroundStyle(.white.opacity(0.6))
+			
+			Text(String(format: "%.1f MB", engine.memory.totalMB))
+				.font(.system(size: 24, weight: .bold, design: .monospaced))
+				.foregroundStyle(memoryColor)
+			
+			HStack(spacing: 4) {
+				Circle()
+					.fill(efficiencyColor)
+					.frame(width: 6, height: 6)
+				Text(String(format: "%.0f%% efficient", engine.memory.efficiency))
+					.font(.system(size: 11, weight: .medium, design: .monospaced))
+					.foregroundStyle(.white.opacity(0.8))
+			}
+			
+			if showDetailedMemory {
+				Divider()
+					.background(.white.opacity(0.3))
+					.padding(.vertical, 4)
+				
+				VStack(alignment: .trailing, spacing: 2) {
+					Text(memoryBreakdownText)
+						.font(.system(size: 9, design: .monospaced))
+						.foregroundStyle(.white.opacity(0.7))
+				}
+			}
+			
+			// Help text
+			Text("M: toggle • P: print")
+				.font(.system(size: 8, design: .monospaced))
+				.foregroundStyle(.white.opacity(0.4))
+				.padding(.top, 4)
+		}
+		.padding(12)
+		.background {
+			RoundedRectangle(cornerRadius: 8)
+				.fill(.black.opacity(0.75))
+				.overlay {
+					RoundedRectangle(cornerRadius: 8)
+						.strokeBorder(memoryColor.opacity(0.3), lineWidth: 1)
+				}
+		}
+		.shadow(color: .black.opacity(0.3), radius: 8)
+		.animation(.easeInOut(duration: 0.2), value: showDetailedMemory)
+	}
+	
+	private var memoryColor: Color {
+		if engine.memory.totalMB > 4000 {
+			return .red
+		} else if engine.memory.totalMB > 2000 {
+			return .orange
+		} else {
+			return Color(red: 0.0, green: 0.9, blue: 0.7)
+		}
+	}
+	
+	private var efficiencyColor: Color {
+		if engine.memory.efficiency < 15 {
+			return .red
+		} else if engine.memory.efficiency < 25 {
+			return .orange
+		} else {
+			return .green
+		}
+	}
+	
+	private var memoryBreakdownText: String
+	{
+		let kbPerSplat = engine.memory.mbPerSplat * 1024.0
+		return String(format: "Model: %.1f MB\nGPU Cache: %.1f MB\nCPU Images: %.1f MB\n%.1f KB/splat", 
+					  engine.memory.modelMB, engine.memory.datasetMB, engine.memory.cpuImagesMB, kbPerSplat)
 	}
 	
 	@ViewBuilder func OrbitingView() -> some View
@@ -484,7 +611,7 @@ struct DemoApp: App {
 	{
         WindowGroup {
             ContentView(datasetPath: datasetPath)
-                .frame(minWidth: 960, minHeight: 640)
+                .frame(minWidth: 200, minHeight: 200)
         }
         .defaultSize(width: 1280, height: 720)
     }
