@@ -60,7 +60,11 @@ func saveGaussianPly(_ path: String, _ p: GaussianParams, step: Int) throws
 				c += 1
             }
             c += 3 // normals = 0
-            for j in 0..<numDc { out[c] = dp[i * numDc + j]; c += 1 }
+            for j in 0..<numDc 
+			{
+				out[c] = dp[i * numDc + j]; 
+				c += 1 
+			}
             // Transpose [frBases, 3] → [3, frBases] for PLY convention
             for ch in 0..<3 
 			{

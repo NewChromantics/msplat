@@ -235,7 +235,7 @@ final class Engine
 				}
 			}
 			
-			if i % 30 == 0 || i == config.iterations-1
+			if i == 100 || i % 300 == 0 || i == config.iterations-1
 			{
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
@@ -243,7 +243,7 @@ final class Engine
 				let splatRender = try await trainer.render(cameraIndex: renderCameraIndex % inputData.numCameras, format: .rgba)
 				renderCameraIndex += 1
 				
-				let splats = trainer.GetSplats()
+				let splats = try trainer.GetSplats()
 				
 				//	this can be done on another thread
 				do

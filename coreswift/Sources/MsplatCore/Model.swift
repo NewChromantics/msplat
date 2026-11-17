@@ -611,7 +611,8 @@ final class Model
         var camPos: (Float, Float, Float)
     }
 
-    func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CamSetup {
+    func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CamSetup
+	{
         let sf = Float(getDownscaleFactor(step))
         let fx = cam.meta.fx / sf, fy = cam.meta.fy / sf, cx = cam.meta.cx / sf, cy = cam.meta.cy / sf
         let height = Int(Float(cam.meta.height) / sf)
@@ -620,7 +621,8 @@ final class Model
         let fovX = 2.0 * atanf(Float(width) / (2.0 * fx))
         let fovY = 2.0 * atanf(Float(height) / (2.0 * fy))
 
-        if !cam.cachedViewMat.defined || cam.cachedFovX != fovX || cam.cachedFovY != fovY {
+        if !cam.cachedViewMat.defined || cam.cachedFovX != fovX || cam.cachedFovY != fovY 
+		{
             let d = cam.meta.camToWorld
             var R = [[Float]](repeating: [0, 0, 0], count: 3)
             var T: [Float] = [0, 0, 0]
@@ -684,10 +686,15 @@ final class Model
     }
 
 	
-	func GetSplats() -> [PlySplatPoint]
+	func GetSplats() throws -> [PlySplatPoint]
 	{
 		//	todo: use gpu buffers
 		refreshViews()
+
+		if featuresDc.shape[1] != 3
+		{
+			throw MsplatError("Expecting 3 sh0")
+		}
 		
 		let positions = means.float3s()
 		let scales = scales.float3s()

@@ -269,42 +269,48 @@ struct ContentView: View
 					.aspectRatio(contentMode: .fit)
 			}
 			
-			SplatSceneView(scene: scene, renderStats: $renderStats, renderer: .realityKit, assetManager:assetManager)
+			SplatSceneView(scene: scene, renderStats: $renderStats, renderer: .metal, assetManager:assetManager)
 		}
 	}
 	
+	@State var loadCount = 0
 	func OnEngineSplatsChanged(points:[PlySplatPoint])
 	{
 		//	asset data is flat interleaved
 		let floats : [Float] = points.flatMap
 		{
 			plySplatPoint in
-			//let position = GaussianSplatResource.BufferDescriptor(buffer: buffer, format: .float3, stride: stride, offset: 0)
-			//let scale = GaussianSplatResource.BufferDescriptor(buffer: buffer, format: .float3, stride: stride, offset: 3 * floatSize)
-			//let rotation = GaussianSplatResource.BufferDescriptor(buffer: buffer, format: .float4, stride: stride, offset: 6 * floatSize)
-			//let opacity = GaussianSplatResource.BufferDescriptor(buffer: buffer, format: .float, stride: stride, offset: 10 * floatSize)
-			//let sphericalHarmonics = GaussianSplatResource.BufferDescriptor(buffer: buffer, format: .float3, stride: stride, offset: 11 * floatSize)
+			// RealityKit's GaussianSplatResource expects specific memory layout:
+			// position(3) scale(3) rotation(4) opacity(1) sphericalHarmonics(5+)
+			// Even for degree .zero (3 SH coeffs), we need to pad to at least 5 floats
+			// based on Metal validation requiring 20 bytes (5 floats) for the SH argument
 			[
 				plySplatPoint.position.x,
 				plySplatPoint.position.y,
 				plySplatPoint.position.z,
-				plySplatPoint.scale.x,
-				plySplatPoint.scale.y,
-				plySplatPoint.scale.z,
-				plySplatPoint.rotation.vector.x,
-				plySplatPoint.rotation.vector.y,
-				plySplatPoint.rotation.vector.z,
-				plySplatPoint.rotation.vector.w,
-				plySplatPoint.opacity,
+				plySplatPoint.scaleLog.x,
+				plySplatPoint.scaleLog.y,
+				plySplatPoint.scaleLog.z,
+				plySplatPoint.quaternionWxyz[0],
+				plySplatPoint.quaternionWxyz[1],
+				plySplatPoint.quaternionWxyz[2],
+				plySplatPoint.quaternionWxyz[3],
+				plySplatPoint.opacityLogit,
+				
 				plySplatPoint.shDc.x,
 				plySplatPoint.shDc.y,
 				plySplatPoint.shDc.z,
+				//0,	// SH padding
+				//0,	// SH padding (16 floats total = 64 bytes, 16-byte aligned)
 			]
 		}
 		
+		// 16 floats per splat = 64 bytes (16-byte aligned)
+		// SH data is 3 floats but padded with 2 extra floats for Metal validation
 		let splatData = SplatAsset.SplatData(floatsPerSplat: 14, sphericalHarmonicsFloats: 3, interleaved: floats)
 		//	make new asset
 		let asset = SplatAsset(splatData: splatData)
+		
 		assetManager.InsertAsset(url: Self.liveSplatAssetUrl, asset: asset)
 	}
 }

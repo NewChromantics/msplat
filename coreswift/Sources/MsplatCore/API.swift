@@ -28,7 +28,10 @@ public struct PlySplatPoint : Sendable, Equatable
 {
 	public var position : simd_float3
 	public var quaternionWxyz : simd_float4
-	public var rotation : simd_quatf		{	simd_normalize( simd_quatf(ix: quaternionWxyz.y, iy: quaternionWxyz.z, iz: quaternionWxyz.w, r: quaternionWxyz.x) )	}
+	public var rotation : simd_quatf		
+	{
+		simd_normalize( simd_quatf(ix: quaternionWxyz.y, iy: quaternionWxyz.z, iz: quaternionWxyz.w, r: quaternionWxyz.x) )	
+	}
 	public var scaleLog : simd_float3
 	public var scale : simd_float3			{	simd_float3( exp(scaleLog.x), exp(scaleLog.y), exp(scaleLog.z) )	}
 	public var opacityLogit : Float
@@ -268,9 +271,9 @@ public final class SplatTrainer {
 		return try await renderToImage(dataset.cameras[cameraIndex], format: format)
     }
 	
-	public func GetSplats() -> [PlySplatPoint]
+	public func GetSplats() throws -> [PlySplatPoint]
 	{
-		return model.GetSplats()
+		return try model.GetSplats()
 	}
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
