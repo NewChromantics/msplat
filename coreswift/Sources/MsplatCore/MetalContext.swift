@@ -41,6 +41,142 @@ func logErr(_ s: String) {
     FileHandle.standardError.write((s.hasSuffix("\n") ? s : s + "\n").data(using: .utf8)!)
 }
 
+/// Per-call-site "warn once" state for the per-tile overflow check.
+struct OverflowCheck {
+    var warned = false
+    var iterCount = 0
+
+    mutating func run(numPoints: Int, cache: FusedTensorCache) {
+        iterCount += 1
+        let numPointsChanged = numPoints != cache.fwdNumPoints && cache.fwdNumPoints > 0
+        if !warned && cache.overflowFlag.defined && cache.fwdNumPoints > 0
+            && (numPointsChanged || iterCount % 100 == 1) 
+		{
+            if cache.overflowFlag.int32s()[0] > 0 {
+                logErr("WARNING: per-tile overflow (>2048 gaussians in a tile). "
+                    + "Some gaussians were dropped from overfull tiles.")
+                warned = true
+            }
+        }
+    }
+}
+
+// MARK: - Cached buffer pool
+
+/// All intermediate GPU buffers, reused across iterations. Sizes only change at
+/// densification or resolution changes.
+struct FusedTensorCache {
+    var fwdNumPoints = 0, capacity = 0, imgHeight = 0, imgWidth = 0, numTiles = 0
+    var bwdNumPoints = 0, featuresRestBases = 0, channels = 0
+
+    // Forward intermediates
+    var xys = MTensor(), depths = MTensor(), radiiOut = MTensor(), conics = MTensor()
+    var numTilesHit = MTensor(), colors = MTensor(), aabb = MTensor()
+    var gaussianIds = MTensor()
+    var packedXyOpac = MTensor(), packedConic = MTensor(), packedRgb = MTensor()
+    var outImg = MTensor(), finalTs = MTensor(), finalIdx = MTensor()
+    var lossIntermediates = MTensor()
+    var ssimHBuf = MTensor()
+    var tileBins = MTensor(), lossSum = MTensor()
+
+    // Tile-local sorting
+    var tileOffsets = MTensor(), tileScatterCounters = MTensor()
+    var preallocBins = MTensor()
+
+    // Multi-threadgroup prefix-sum temp
+    var blockTotals = MTensor()
+
+    // Per-tile overflow detection
+    var overflowFlag = MTensor()
+
+    // Depth-chunked rasterization
+    var chunkKMax = 0
+    var chunkH = 0, chunkW = 0
+    var chunkT = MTensor(), chunkC = MTensor(), chunkFinalIdx = MTensor()
+    var prefixT = MTensor(), afterC = MTensor()
+
+    // Backward accumulators
+    var vRendered = MTensor()
+    var vXy = MTensor(), vConic = MTensor(), vColorsRast = MTensor(), vOpacity = MTensor(), vDepth = MTensor()
+    var vMean3d = MTensor(), vScale = MTensor(), vQuat = MTensor(), vFeaturesDc = MTensor(), vFeaturesRest = MTensor()
+
+    mutating func ensureForward(np: Int, cap: Int, ih: Int, iw: Int, nt: Int, ch: Int, ctx: MetalContext) {
+        if np != fwdNumPoints {
+            fwdNumPoints = np
+            xys = try! ctx.makeEmpty([np, 2], .float32)
+            depths = try! ctx.makeEmpty([np], .float32)
+            radiiOut = try! ctx.makeEmpty([np], .int32)
+            conics = try! ctx.makeEmpty([np, 3], .float32)
+            numTilesHit = try! ctx.makeEmpty([np], .int32)
+            colors = try! ctx.makeEmpty([np, 3], .float32)
+            aabb = try! ctx.makeEmpty([np, 2], .float32)
+            blockTotals = try! ctx.makeEmpty([(np + 1023) / 1024], .int32)
+        }
+        if cap != capacity {
+            capacity = cap
+            gaussianIds = try! ctx.makeEmpty([cap], .int32)
+            packedXyOpac = try! ctx.makeEmpty([cap, 3], .float32)
+            packedConic = try! ctx.makeEmpty([cap, 3], .float32)
+            packedRgb = try! ctx.makeEmpty([cap, 3], .float32)
+        }
+        if ih != imgHeight || iw != imgWidth || ch != channels {
+            imgHeight = ih; imgWidth = iw; channels = ch
+            outImg = try! ctx.makeEmpty([ih, iw, ch], .float32)
+            finalTs = try! ctx.makeEmpty([ih, iw], .float32)
+            finalIdx = try! ctx.makeEmpty([ih, iw], .int32)
+            lossIntermediates = try! ctx.makeEmpty([ih, iw, 15], .float32)
+            ssimHBuf = try! ctx.makeEmpty([ih, iw, 15], .float32)
+            vRendered = try! ctx.makeEmpty([ih, iw, ch], .float32)
+        }
+        if nt != numTiles {
+            numTiles = nt
+            tileBins = try! ctx.makeEmpty([nt, 2], .int32)
+            tileOffsets = try! ctx.makeEmpty([nt], .int32)
+            tileScatterCounters = try! ctx.makeEmpty([nt], .int32)
+            preallocBins = try! ctx.makeEmpty([nt * 2048], .int64)  // MAX_TILE_ELEMS = 2048
+        }
+        if !lossSum.defined { lossSum = try! ctx.makeEmpty([1], .float32) }
+        if !overflowFlag.defined { overflowFlag = try! ctx.makeEmpty([1], .int32) }
+    }
+
+    mutating func ensureChunks(k: Int, ih: Int, iw: Int, ch: Int, ctx: MetalContext) throws 
+	{
+        if k <= chunkKMax && ih == chunkH && iw == chunkW 
+		{
+			return 
+		}
+        chunkKMax = k
+        chunkH = ih; chunkW = iw
+        chunkT = try ctx.makeEmpty([k, ih, iw], .float32)
+        chunkC = try ctx.makeEmpty([k, ih, iw, ch], .float32)
+        chunkFinalIdx = try ctx.makeEmpty([k, ih, iw], .int32)
+        prefixT = try ctx.makeEmpty([k, ih, iw], .float32)
+        afterC = try ctx.makeEmpty([k, ih, iw, ch], .float32)
+    }
+
+    mutating func ensureBackward(np: Int, frb: Int, ctx: MetalContext) {
+        if np != bwdNumPoints || frb != featuresRestBases || !vXy.defined {
+            bwdNumPoints = np
+            featuresRestBases = frb
+            vXy = try! ctx.makeEmpty([np, 2], .float32)
+            vConic = try! ctx.makeEmpty([np, 3], .float32)
+            vColorsRast = try! ctx.makeEmpty([np, 3], .float32)
+            vOpacity = try! ctx.makeEmpty([np, 1], .float32)
+            vDepth = try! ctx.makeZeros([np], .float32)  // never written; read as 0
+            vMean3d = try! ctx.makeEmpty([np, 3], .float32)
+            vScale = try! ctx.makeEmpty([np, 3], .float32)
+            vQuat = try! ctx.makeEmpty([np, 4], .float32)
+            vFeaturesDc = try! ctx.makeEmpty([np, 3], .float32)
+            vFeaturesRest = try! ctx.makeEmpty([np, frb, 3], .float32)
+        }
+    }
+    
+    mutating func reset() {
+        self = FusedTensorCache()
+    }
+}
+
+
 
 //	metal objects are threadsafe, stats are not 
 public final class MetalContext : @unchecked Sendable 
@@ -85,6 +221,17 @@ public final class MetalContext : @unchecked Sendable
     let densify_cull_classify: MTLComputePipelineState
     let compact_scatter: MTLComputePipelineState
     let compact_copy_back: MTLComputePipelineState
+
+    // Tensor cache for intermediate GPU buffers
+    var tensorCache = FusedTensorCache()
+    
+    // Overflow check state
+    var renderOverflowCheck = OverflowCheck()
+    var trainOverflowCheck = OverflowCheck()
+    
+    // Diagnostic counters
+    var renderDiagCount = 0
+    var trainDiagIt = 0
 
     public init() throws {
         guard let dev = MTLCreateSystemDefaultDevice() else {
@@ -290,6 +437,13 @@ public final class MetalContext : @unchecked Sendable
     
     public func endGpuCapture() {
         MTLCaptureManager.shared().stopCapture()
+    }
+    
+    // MARK: - Tensor cache management
+    
+    /// Release all cached GPU tensors.
+    public func cleanupTensorCache() {
+        tensorCache.reset()
     }
 }
 

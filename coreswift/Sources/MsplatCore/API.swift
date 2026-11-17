@@ -83,7 +83,6 @@ public struct MsplatEvalMetrics {
 // MARK: - Runtime / lifecycle
 
 public enum MsplatRuntime {
-    public static func cleanup() { cleanupMsplatMetal() }
     /// Capture to .gputrace (launch with METAL_CAPTURE_ENABLED=1). Sync on both edges.
     //@discardableResult
     public static func enableGpuTiming(_ enable: Bool) { msplatEnableGpuTiming(enable) }
