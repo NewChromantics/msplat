@@ -38,6 +38,29 @@ public struct CameraMeta
     var hasDistortion: Bool { k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0 }
 }
 
+/// Cached camera transforms and projection data computed during rendering
+struct CameraRenderParams {
+    var viewMat = MTensor()
+    var projViewMat = MTensor()
+    var camPos: SIMD3<Float> = .zero
+    var fovX: Float = 0
+    var fovY: Float = 0
+    
+    var isDefined: Bool { viewMat.defined && projViewMat.defined }
+    
+    mutating func clear() {
+        viewMat.reset()
+        projViewMat.reset()
+        camPos = .zero
+        fovX = 0
+        fovY = 0
+    }
+    
+    var gpuMemoryUsage: Int {
+        viewMat.nbytes + projViewMat.nbytes
+    }
+}
+
 /// Runtime camera data: lazily-built caches (image pyramids, GPU data, view matrices)
 /// that are filled in during training. Reference type to allow mutation of caches.
 public final class RuntimeCamera 
@@ -46,9 +69,6 @@ public final class RuntimeCamera
 	public let image: RGBImage
     var imagePyramids: [Int: RGBImage] = [:]
     var gpuImageCache: [Int: MTensor] = [:]
-    var cachedViewMat = MTensor(), cachedProjViewMat = MTensor()
-    var cachedCamPos: (Float, Float, Float) = (0, 0, 0)
-    var cachedFovX: Float = 0, cachedFovY: Float = 0
 
     deinit {
         // Clean up GPU cached data to prevent memory leaks
@@ -128,16 +148,12 @@ public final class RuntimeCamera
     
     /// Create a RuntimeCamera with new metadata but reusing the existing image and caches.
     /// Used for operations like scaling and centering that only modify camera transforms.
-    fileprivate init(meta: CameraMeta, image: RGBImage, copyingCachesFrom source: RuntimeCamera) {
+    fileprivate init(meta: CameraMeta, image: RGBImage, copyingCachesFrom source: RuntimeCamera) 
+	{
         self.meta = meta
         self.image = image
         self.imagePyramids = source.imagePyramids
         self.gpuImageCache = source.gpuImageCache
-        self.cachedViewMat = source.cachedViewMat
-        self.cachedProjViewMat = source.cachedProjViewMat
-        self.cachedCamPos = source.cachedCamPos
-        self.cachedFovX = source.cachedFovX
-        self.cachedFovY = source.cachedFovY
     }
 
     func getImage(downscaleFactor: Int) -> RGBImage {
@@ -163,9 +179,6 @@ public final class RuntimeCamera
             tensor.reset()
         }
         gpuImageCache.removeAll()
-        
-        cachedViewMat.reset()
-        cachedProjViewMat.reset()
     }
     
     /// Clear GPU cached images for specific downscale factors (keeping others).
@@ -190,8 +203,6 @@ public final class RuntimeCamera
         for (_, tensor) in gpuImageCache {
             total += tensor.nbytes
         }
-        total += cachedViewMat.nbytes
-        total += cachedProjViewMat.nbytes
         return total
     }
 }

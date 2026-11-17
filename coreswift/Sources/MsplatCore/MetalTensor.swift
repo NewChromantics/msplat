@@ -120,6 +120,18 @@ public struct MTensor
 	func float4s() -> UnsafeMutablePointer<simd_float4> { pointer(simd_float4.self) }
 	func quat4s() -> UnsafeMutablePointer<simd_quatf> { pointer(simd_quatf.self) }
 
+    /// Convert 4x4 tensor to simd_float4x4 matrix (assumes row-major layout)
+    func toFloat4x4() -> simd_float4x4 {
+        precondition(shape.count == 2 && shape[0] == 4 && shape[1] == 4, "toFloat4x4: expected [4,4] shape")
+        let f = floats()
+        return simd_float4x4(
+            SIMD4<Float>(f[0], f[1], f[2], f[3]),
+            SIMD4<Float>(f[4], f[5], f[6], f[7]),
+            SIMD4<Float>(f[8], f[9], f[10], f[11]),
+            SIMD4<Float>(f[12], f[13], f[14], f[15])
+        )
+    }
+
     func zero() {
         guard defined else { return }
         memset(rawPointer, 0, nbytes)

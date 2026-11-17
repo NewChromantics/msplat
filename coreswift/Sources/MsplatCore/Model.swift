@@ -3,7 +3,7 @@
 // PLY/splat export and checkpointing.
 
 import Foundation
-
+import simd
 
 
 /// Little-endian binary reader over Data.
@@ -609,80 +609,121 @@ final class Model
         var height: Int, width: Int, degree: Int, degreesToUse: Int
         var tileBounds: (Int, Int, Int)
         var camPos: (Float, Float, Float)
+		var cameraRenderParams : CameraRenderParams
     }
 
     func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CamSetup
 	{
-        let sf = Float(getDownscaleFactor(step))
-        let fx = cam.meta.fx / sf, fy = cam.meta.fy / sf, cx = cam.meta.cx / sf, cy = cam.meta.cy / sf
-        let height = Int(Float(cam.meta.height) / sf)
-        let width = Int(Float(cam.meta.width) / sf)
-
-        let fovX = 2.0 * atanf(Float(width) / (2.0 * fx))
-        let fovY = 2.0 * atanf(Float(height) / (2.0 * fy))
-
-        if !cam.cachedViewMat.defined || cam.cachedFovX != fovX || cam.cachedFovY != fovY 
-		{
-            let d = cam.meta.camToWorld
-            var R = [[Float]](repeating: [0, 0, 0], count: 3)
-            var T: [Float] = [0, 0, 0]
-            for i in 0..<3 {
-                R[i][0] = d[i * 4 + 0]; R[i][1] = -d[i * 4 + 1]; R[i][2] = -d[i * 4 + 2]; T[i] = d[i * 4 + 3]
-            }
-            var Rinv = [[Float]](repeating: [0, 0, 0], count: 3)
-            for i in 0..<3 { for j in 0..<3 { Rinv[i][j] = R[j][i] } }
-            var Tinv: [Float] = [0, 0, 0]
-            for i in 0..<3 { Tinv[i] = -(Rinv[i][0] * T[0] + Rinv[i][1] * T[1] + Rinv[i][2] * T[2]) }
-            let vm: [Float] = [
-                Rinv[0][0], Rinv[0][1], Rinv[0][2], Tinv[0],
-                Rinv[1][0], Rinv[1][1], Rinv[1][2], Tinv[1],
-                Rinv[2][0], Rinv[2][1], Rinv[2][2], Tinv[2],
-                0, 0, 0, 1,
-            ]
-            let tP = 0.001 * tanf(0.5 * fovY), rP = 0.001 * tanf(0.5 * fovX)
-            let zf: Float = 1000.0, zn: Float = 0.001
-            let pm: [Float] = [
-                zn / rP, 0, 0, 0,
-                0, zn / tP, 0, 0,
-                0, 0, (zf + zn) / (zf - zn), -zf * zn / (zf - zn),
-                0, 0, 1, 0,
-            ]
-            var pvm = [Float](repeating: 0, count: 16)
-            for i in 0..<4 { for j in 0..<4 { for k in 0..<4 { pvm[i * 4 + j] += pm[i * 4 + k] * vm[k * 4 + j] } } }
-
-            cam.cachedViewMat = try metalContext.makeEmpty([4, 4])
-            cam.cachedViewMat.copyIn(vm)
-            cam.cachedProjViewMat = try! metalContext.makeEmpty([4, 4])
-            cam.cachedProjViewMat.copyIn(pvm)
-            cam.cachedCamPos = (T[0], T[1], T[2])
-            cam.cachedFovX = fovX; cam.cachedFovY = fovY
-        }
+		let sf = Float(getDownscaleFactor(step))
+		let fx = cam.meta.fx / sf
+		let fy = cam.meta.fy / sf
+		let cx = cam.meta.cx / sf
+		let cy = cam.meta.cy / sf
+		let height = Int(Float(cam.meta.height) / sf)
+		let width = Int(Float(cam.meta.width) / sf)
+		
+		let fovX = 2.0 * atanf(Float(width) / (2.0 * fx))
+		let fovY = 2.0 * atanf(Float(height) / (2.0 * fy))
+		
+		//	need to remake cache
+		let cameraRenderParams = try makeCameraRenderParamCache(cam, fovX: fovX, fovY: fovY)
 
         let b = featuresRest.size(-2) + 1
         let degree = b <= 1 ? 0 : b <= 4 ? 1 : b <= 9 ? 2 : b <= 16 ? 3 : 4
+        let cachePos = cameraRenderParams.camPos
+		
         return CamSetup(
             fx: fx, fy: fy, cx: cx, cy: cy, height: height, width: width,
+			
             degree: degree, degreesToUse: min(step / shDegreeInterval, shDegree),
             tileBounds: ((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1),
-            camPos: cam.cachedCamPos)
+			camPos: (cachePos.x, cachePos.y, cachePos.z),
+			cameraRenderParams: cameraRenderParams)
     }
 
-	private func renderParams(_ cam: RuntimeCamera, _ s: CamSetup, channels:Int) -> RenderParams {
-        RenderParams(
+    private func makeCameraRenderParamCache(_ cam: RuntimeCamera, fovX: Float, fovY: Float) throws -> CameraRenderParams 
+	{
+        let d = cam.meta.camToWorld
+        var R = [[Float]](repeating: [0, 0, 0], count: 3)
+        var T: [Float] = [0, 0, 0]
+        for i in 0..<3 {
+            R[i][0] = d[i * 4 + 0]
+            R[i][1] = -d[i * 4 + 1]
+            R[i][2] = -d[i * 4 + 2]
+            T[i] = d[i * 4 + 3]
+        }
+        
+        var Rinv = [[Float]](repeating: [0, 0, 0], count: 3)
+        for i in 0..<3 {
+            for j in 0..<3 {
+                Rinv[i][j] = R[j][i]
+            }
+        }
+        
+        var Tinv: [Float] = [0, 0, 0]
+        for i in 0..<3 {
+            Tinv[i] = -(Rinv[i][0] * T[0] + Rinv[i][1] * T[1] + Rinv[i][2] * T[2])
+        }
+        
+        let vm: [Float] = [
+            Rinv[0][0], Rinv[0][1], Rinv[0][2], Tinv[0],
+            Rinv[1][0], Rinv[1][1], Rinv[1][2], Tinv[1],
+            Rinv[2][0], Rinv[2][1], Rinv[2][2], Tinv[2],
+            0, 0, 0, 1,
+        ]
+        
+        let tP = 0.001 * tanf(0.5 * fovY)
+        let rP = 0.001 * tanf(0.5 * fovX)
+        let zf: Float = 1000.0
+        let zn: Float = 0.001
+        
+        let pm: [Float] = [
+            zn / rP, 0, 0, 0,
+            0, zn / tP, 0, 0,
+            0, 0, (zf + zn) / (zf - zn), -zf * zn / (zf - zn),
+            0, 0, 1, 0,
+        ]
+        
+        var pvm = [Float](repeating: 0, count: 16)
+        for i in 0..<4 {
+            for j in 0..<4 {
+                for k in 0..<4 {
+                    pvm[i * 4 + j] += pm[i * 4 + k] * vm[k * 4 + j]
+                }
+            }
+        }
+
+        var newCache = CameraRenderParams()
+        newCache.viewMat = try metalContext.makeEmpty([4, 4])
+        newCache.viewMat.copyIn(vm)
+        newCache.projViewMat = try metalContext.makeEmpty([4, 4])
+        newCache.projViewMat.copyIn(pvm)
+        newCache.camPos = SIMD3<Float>(T[0], T[1], T[2])
+        newCache.fovX = fovX
+        newCache.fovY = fovY
+       return newCache
+    }
+
+	private func renderParams(_ cam: RuntimeCamera, camSetup: CamSetup, channels: Int) -> RenderParams 
+	{
+		let cache = camSetup.cameraRenderParams
+        return RenderParams(
             numPoints: means.size(0), means3d: means, scales: scales, globScale: 1.0,
-            quats: quats, viewmat: cam.cachedViewMat, projmat: cam.cachedProjViewMat,
-            fx: s.fx, fy: s.fy, cx: s.cx, cy: s.cy,
-            imgHeight: UInt32(s.height), imgWidth: UInt32(s.width),
-            tileBounds: s.tileBounds, clipThresh: 0.01,
-            degree: UInt32(s.degree), degreesToUse: UInt32(s.degreesToUse), camPos: s.camPos,
+            quats: quats, 
+            viewmat: cache.viewMat.toFloat4x4(), 
+            projmat: cache.projViewMat.toFloat4x4(),
+            fx: camSetup.fx, fy: camSetup.fy, cx: camSetup.cx, cy: camSetup.cy,
+            imgHeight: UInt32(camSetup.height), imgWidth: UInt32(camSetup.width),
+            tileBounds: camSetup.tileBounds, clipThresh: 0.01,
+            degree: UInt32(camSetup.degree), degreesToUse: UInt32(camSetup.degreesToUse), camPos: camSetup.camPos,
             featuresDc: featuresDc, featuresRest: featuresRest,
-			opacities: opacities, background: backgroundColor, channels:UInt32(channels) )
+			opacities: opacities, background: backgroundColor, channels: UInt32(channels))
     }
 
     func render(_ cam: RuntimeCamera, step: Int, channels:Int) async throws -> MTensor 
 	{
         let s = try prepareCam(cam, step: step)
-		return try await msplatRender(renderParams(cam, s, channels:channels), metalContext)
+		return try await msplatRender(renderParams(cam, camSetup:s, channels: channels), metalContext)
     }
 
 	
@@ -753,7 +794,7 @@ final class Model
 			adamBeta1: adamBeta1, adamBeta2: adamBeta2, adamEps: adamEps,
 			visCounts: visCounts, xysGradNorm: xysGradNorm, max2dSize: max2DSize,
 			invMaxDim: invMaxDim)
-        let (r, _) = try await msplatTrainStep(renderParams(cam, s, channels: 3), params, metalContext)
+		let (r, _) = try await msplatTrainStep(renderParams(cam, camSetup: s, channels: 3), params, metalContext)
         radii = r
     }
     

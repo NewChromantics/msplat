@@ -235,7 +235,7 @@ final class Engine
 				}
 			}
 			
-			if i == 100 || i % 300 == 0 || i == config.iterations-1
+			if i == 100 || i % 200 == 0 || i == config.iterations-1
 			{
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)

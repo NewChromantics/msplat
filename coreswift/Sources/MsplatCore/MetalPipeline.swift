@@ -6,6 +6,7 @@
 
 import Foundation
 import Metal
+import simd
 
 private let RAST_BLOCK_X = 8
 private let RAST_BLOCK_Y = 8
@@ -181,8 +182,8 @@ public struct RenderParams {
     var scales: MTensor
     var globScale: Float
     var quats: MTensor
-    var viewmat: MTensor
-    var projmat: MTensor
+    var viewmat: simd_float4x4
+    var projmat: simd_float4x4
     var fx: Float, fy: Float, cx: Float, cy: Float
     var imgHeight: UInt32, imgWidth: UInt32
     var tileBounds: (Int, Int, Int)
@@ -302,7 +303,11 @@ private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
     enc.setScalar(Int32(p.numPoints), 0)
     enc.setTensor(p.means3d, 1); enc.setTensor(p.scales, 2)
     enc.setScalar(p.globScale, 3); enc.setTensor(p.quats, 4)
-    enc.setTensor(p.viewmat, 5); enc.setTensor(p.projmat, 6)
+    // Pass matrices directly as bytes instead of MTensor buffers
+    var viewmat = p.viewmat
+    var projmat = p.projmat
+    enc.setBytes(&viewmat, length: MemoryLayout<simd_float4x4>.size, index: 5)
+    enc.setBytes(&projmat, length: MemoryLayout<simd_float4x4>.size, index: 6)
     enc.setArray(k.projIntrins, 7)
     enc.setArray(k.imgSize2, 8)
     enc.setArray(k.tileBoundsArr, 9)
@@ -621,7 +626,11 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
         enc.setComputePipelineState(ctx.project_and_sh_backward)
         enc.setScalar(Int32(p.numPoints), 0); enc.setTensor(p.means3d, 1); enc.setTensor(p.scales, 2)
         enc.setScalar(p.globScale, 3); enc.setTensor(p.quats, 4)
-        enc.setTensor(p.viewmat, 5); enc.setTensor(p.projmat, 6)
+        // Pass matrices directly as bytes instead of MTensor buffers
+        var viewmat = p.viewmat
+        var projmat = p.projmat
+        enc.setBytes(&viewmat, length: MemoryLayout<simd_float4x4>.size, index: 5)
+        enc.setBytes(&projmat, length: MemoryLayout<simd_float4x4>.size, index: 6)
         enc.setArray(k.projIntrins, 7)
         enc.setArray(k.imgSize2, 8)
         enc.setTensor(c.radiiOut, 9); enc.setTensor(c.conics, 10)
