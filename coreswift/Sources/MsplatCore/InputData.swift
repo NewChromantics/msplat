@@ -3,6 +3,7 @@
 
 import Foundation
 import Metal
+import simd
 
 /// Image source for camera metadata
 public enum ImageSource 
@@ -42,7 +43,7 @@ public struct CameraMeta
 struct CameraRenderParams {
     var viewMat = MTensor()
     var projViewMat = MTensor()
-    var camPos: SIMD3<Float> = .zero
+	var camPos: simd_float3 = .zero
     var fovX: Float = 0
     var fovY: Float = 0
     

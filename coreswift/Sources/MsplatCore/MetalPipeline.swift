@@ -175,6 +175,28 @@ func cleanupMsplatMetal() {
 
 // MARK: - Shared parameters
 
+/// Camera intrinsics parameters
+public struct CameraIntrinsics {
+    var fx: Float
+    var fy: Float
+    var cx: Float
+    var cy: Float
+    var width: Int
+    var height: Int
+    
+    var imgWidth: UInt32 { UInt32(width) }
+    var imgHeight: UInt32 { UInt32(height) }
+    
+    init(fx: Float, fy: Float, cx: Float, cy: Float, width: Int, height: Int) {
+        self.fx = fx
+        self.fy = fy
+        self.cx = cx
+        self.cy = cy
+        self.width = width
+        self.height = height
+    }
+}
+
 /// Per-view camera/render parameters shared by render and train step.
 public struct RenderParams {
     var numPoints: Int
@@ -184,12 +206,11 @@ public struct RenderParams {
     var quats: MTensor
     var viewmat: simd_float4x4
     var projmat: simd_float4x4
-    var fx: Float, fy: Float, cx: Float, cy: Float
-    var imgHeight: UInt32, imgWidth: UInt32
+    var intrinsics: CameraIntrinsics
     var tileBounds: (Int, Int, Int)
     var clipThresh: Float
     var degree: UInt32, degreesToUse: UInt32
-    var camPos: (Float, Float, Float)
+    var camPos: simd_float3
     var featuresDc: MTensor
     var featuresRest: MTensor
     var opacities: MTensor
@@ -243,11 +264,11 @@ private struct Consts {
         // prefix sum over them cannot exceed num_tiles * MAX_TILE_ELEMS.
         capacity = numTiles * MAX_TILE_ELEMS
         numPointsU32 = UInt32(p.numPoints)
-        projIntrins = [p.fx, p.fy, p.cx, p.cy]
-        imgSize2 = [p.imgWidth, p.imgHeight]
+        projIntrins = [p.intrinsics.fx, p.intrinsics.fy, p.intrinsics.cx, p.intrinsics.cy]
+        imgSize2 = [p.intrinsics.imgWidth, p.intrinsics.imgHeight]
         tileBoundsArr = [UInt32(tileBoundsX), UInt32(tileBoundsY), UInt32(p.tileBounds.2), 0xDEAD]
-        camPos4 = [p.camPos.0, p.camPos.1, p.camPos.2, 1]
-        imgSizeDim3 = [p.imgWidth, p.imgHeight, 1, 0xDEAD]
+        camPos4 = [p.camPos.x, p.camPos.y, p.camPos.z, 1]
+        imgSizeDim3 = [p.intrinsics.imgWidth, p.intrinsics.imgHeight, 1, 0xDEAD]
         blockSizeDim2 = [Int32(RAST_BLOCK_X), Int32(RAST_BLOCK_Y)]
     }
 }
@@ -301,8 +322,10 @@ private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
     let c = gTensorCache
     enc.setComputePipelineState(ctx.project_and_sh_forward)
     enc.setScalar(Int32(p.numPoints), 0)
-    enc.setTensor(p.means3d, 1); enc.setTensor(p.scales, 2)
-    enc.setScalar(p.globScale, 3); enc.setTensor(p.quats, 4)
+    enc.setTensor(p.means3d, 1)
+	enc.setTensor(p.scales, 2)
+    enc.setScalar(p.globScale, 3)
+	enc.setTensor(p.quats, 4)
     // Pass matrices directly as bytes instead of MTensor buffers
     var viewmat = p.viewmat
     var projmat = p.projmat
@@ -312,13 +335,18 @@ private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
     enc.setArray(k.imgSize2, 8)
     enc.setArray(k.tileBoundsArr, 9)
     enc.setScalar(p.clipThresh, 10)
-    enc.setTensor(c.xys, 11); enc.setTensor(c.depths, 12)
-    enc.setTensor(c.radiiOut, 13); enc.setTensor(c.conics, 14)
+    enc.setTensor(c.xys, 11)
+	enc.setTensor(c.depths, 12)
+    enc.setTensor(c.radiiOut, 13)
+	enc.setTensor(c.conics, 14)
     enc.setTensor(c.numTilesHit, 15)
-    enc.setScalar(p.degree, 16); enc.setScalar(p.degreesToUse, 17)
+    enc.setScalar(p.degree, 16)
+	enc.setScalar(p.degreesToUse, 17)
     enc.setArray(k.camPos4, 18)
-    enc.setTensor(p.featuresDc, 19); enc.setTensor(p.featuresRest, 20)
-    enc.setTensor(c.colors, 21); enc.setTensor(c.aabb, 22)
+    enc.setTensor(p.featuresDc, 19)
+	enc.setTensor(p.featuresRest, 20)
+    enc.setTensor(c.colors, 21)
+	enc.setTensor(c.aabb, 22)
     // buffer 23 removed (was opacity-aware AABB, reverted)
     enc.dispatch1D(p.numPoints, ctx.project_and_sh_forward)
 }
@@ -363,7 +391,7 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
 {
     let c = gTensorCache
     let channels = p.channels
-    let w = Int(p.imgWidth), h = Int(p.imgHeight)
+    let w = p.intrinsics.width, h = p.intrinsics.height
     let tileX = (w + RAST_BLOCK_X - 1) / RAST_BLOCK_X
     let tileY = (h + RAST_BLOCK_Y - 1) / RAST_BLOCK_Y
     let tg = MTLSize(width: RAST_BLOCK_X, height: RAST_BLOCK_Y, depth: 1)
@@ -429,8 +457,8 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
     renderOverflow.run(numPoints: p.numPoints, ctx: ctx)
 
     let k = Consts(p)
-    gTensorCache.ensureForward(np: p.numPoints, cap: k.capacity, ih: Int(p.imgHeight),
-                               iw: Int(p.imgWidth), nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
+    gTensorCache.ensureForward(np: p.numPoints, cap: k.capacity, ih: p.intrinsics.height,
+                               iw: p.intrinsics.width, nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
 
     renderDiagCount += 1
     if benchmarkEnabled && [100, 500, 1500].contains(renderDiagCount) {
@@ -439,7 +467,7 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
             === Roofline Dimensions (iter \(renderDiagCount)) ===
               num_points:     \(p.numPoints)
               capacity:       \(k.capacity) (= num_tiles * \(MAX_TILE_ELEMS))
-              img:            \(p.imgWidth) x \(p.imgHeight) = \(p.imgWidth * p.imgHeight) pixels
+              img:            \(p.intrinsics.width) x \(p.intrinsics.height) = \(p.intrinsics.width * p.intrinsics.height) pixels
               tiles:          \(k.tileBoundsX) x \(k.tileBoundsY) = \(k.numTiles)
               SH degree:      \(p.degree) (bases: \((p.degree + 1) * (p.degree + 1)))
               features_rest:  [\(p.featuresRest.size(0)) x \(p.featuresRest.size(1)) x \(p.featuresRest.size(2))]
@@ -453,7 +481,7 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1 {
-        try gTensorCache.ensureChunks(k: Int(kMax), ih: Int(p.imgHeight), iw: Int(p.imgWidth), ch: Int(p.channels), ctx: ctx)
+        try gTensorCache.ensureChunks(k: Int(kMax), ih: p.intrinsics.height, iw: p.intrinsics.width, ch: Int(p.channels), ctx: ctx)
     }
 
     // Execute render and wait for completion
@@ -487,7 +515,7 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
     trainOverflow.run(numPoints: p.numPoints, ctx: ctx)
 
     let k = Consts(p)
-    let w = Int(p.imgWidth), h = Int(p.imgHeight)
+    let w = p.intrinsics.width, h = p.intrinsics.height
 
     // Periodic diagnostic on the PREVIOUS iteration's counters — must run before
     // ensureForward/ensureBackward, which reallocate whenever sizes change.
@@ -524,10 +552,10 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
     let bwdKMax = kMax
 
     let c = gTensorCache  // snapshot after (re)allocation; tensors share storage
-    let lossImgSize: [UInt32] = [p.imgWidth, p.imgHeight]
+    let lossImgSize: [UInt32] = [p.intrinsics.imgWidth, p.intrinsics.imgHeight]
     // Rasterize kernels take 16x16 tile counts (tile_bins granularity)
-    let rastTb: [UInt32] = [(p.imgWidth + 15) / 16, (p.imgHeight + 15) / 16, 1, 0xDEAD]
-    let rastIsz: [UInt32] = [p.imgWidth, p.imgHeight]
+    let rastTb: [UInt32] = [(p.intrinsics.imgWidth + 15) / 16, (p.intrinsics.imgHeight + 15) / 16, 1, 0xDEAD]
+    let rastIsz: [UInt32] = [p.intrinsics.imgWidth, p.intrinsics.imgHeight]
 
     // Backward outputs used as Adam gradients
     let adamGrads = [c.vMean3d, c.vScale, c.vQuat, c.vFeaturesDc, c.vFeaturesRest, c.vOpacity]

@@ -605,10 +605,10 @@ final class Model
     // MARK: Per-view setup, render, training iteration
 
     struct CamSetup {
-        var fx: Float, fy: Float, cx: Float, cy: Float
-        var height: Int, width: Int, degree: Int, degreesToUse: Int
+        var intrinsics: CameraIntrinsics
+        var degree: Int, degreesToUse: Int
         var tileBounds: (Int, Int, Int)
-        var camPos: (Float, Float, Float)
+        var camPos: simd_float3
 		var cameraRenderParams : CameraRenderParams
     }
 
@@ -632,12 +632,13 @@ final class Model
         let degree = b <= 1 ? 0 : b <= 4 ? 1 : b <= 9 ? 2 : b <= 16 ? 3 : 4
         let cachePos = cameraRenderParams.camPos
 		
+		let intrinsics = CameraIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy, width: width, height: height)
+		
         return CamSetup(
-            fx: fx, fy: fy, cx: cx, cy: cy, height: height, width: width,
-			
+			intrinsics: intrinsics,
             degree: degree, degreesToUse: min(step / shDegreeInterval, shDegree),
             tileBounds: ((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1),
-			camPos: (cachePos.x, cachePos.y, cachePos.z),
+			camPos: cachePos,
 			cameraRenderParams: cameraRenderParams)
     }
 
@@ -712,8 +713,7 @@ final class Model
             quats: quats, 
             viewmat: cache.viewMat.toFloat4x4(), 
             projmat: cache.projViewMat.toFloat4x4(),
-            fx: camSetup.fx, fy: camSetup.fy, cx: camSetup.cx, cy: camSetup.cy,
-            imgHeight: UInt32(camSetup.height), imgWidth: UInt32(camSetup.width),
+            intrinsics: camSetup.intrinsics,
             tileBounds: camSetup.tileBounds, clipThresh: 0.01,
             degree: UInt32(camSetup.degree), degreesToUse: UInt32(camSetup.degreesToUse), camPos: camSetup.camPos,
             featuresDc: featuresDc, featuresRest: featuresRest,
@@ -762,7 +762,8 @@ final class Model
 	func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) async throws 
 	{
         let s = try prepareCam(cam, step: step)
-        lastHeight = s.height; lastWidth = s.width
+        lastHeight = s.intrinsics.height
+		lastWidth = s.intrinsics.width
         let numPoints = means.size(0)
 
         if !window2d.defined {
@@ -784,7 +785,7 @@ final class Model
         }
 
         let invMaxDim = 1.0 / Float(max(lastHeight, lastWidth))
-        let lossInvN = 1.0 / Float(s.height * s.width * 3)
+        let lossInvN = 1.0 / Float(s.intrinsics.height * s.intrinsics.width * 3)
 
 		let params = TrainParams(
 			gt: gt, window2d: window2d, ssimWeight: ssimWeight,
