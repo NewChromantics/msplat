@@ -100,7 +100,7 @@ struct FusedTensorCache {
     var vXy = MTensor(), vConic = MTensor(), vColorsRast = MTensor(), vOpacity = MTensor(), vDepth = MTensor()
     var vMean3d = MTensor(), vScale = MTensor(), vQuat = MTensor(), vFeaturesDc = MTensor(), vFeaturesRest = MTensor()
 
-    mutating func ensureForward(np: Int, cap: Int, ih: Int, iw: Int, nt: Int, ch: Int, ctx: MetalContext) {
+    mutating func ensureForwardPassBuffers(np: Int, cap: Int, ih: Int, iw: Int, nt: Int, ch: Int, ctx: MetalContext) {
         if np != fwdNumPoints {
             fwdNumPoints = np
             xys = try! ctx.makeEmpty([np, 2], .float32)
@@ -139,7 +139,7 @@ struct FusedTensorCache {
         if !overflowFlag.defined { overflowFlag = try! ctx.makeEmpty([1], .int32) }
     }
 
-    mutating func ensureChunks(k: Int, ih: Int, iw: Int, ch: Int, ctx: MetalContext) throws 
+    mutating func ensureChunkedRenderingBuffers(k: Int, ih: Int, iw: Int, ch: Int, ctx: MetalContext) throws 
 	{
         if k <= chunkKMax && ih == chunkH && iw == chunkW 
 		{
@@ -154,7 +154,7 @@ struct FusedTensorCache {
         afterC = try ctx.makeEmpty([k, ih, iw, ch], .float32)
     }
 
-    mutating func ensureBackward(np: Int, frb: Int, ctx: MetalContext) {
+    mutating func ensureBackwardPassBuffers(np: Int, frb: Int, ctx: MetalContext) {
         if np != bwdNumPoints || frb != featuresRestBases || !vXy.defined {
             bwdNumPoints = np
             featuresRestBases = frb

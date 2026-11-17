@@ -7,6 +7,8 @@
 import Foundation
 import Metal
 import simd
+import PopCommon
+
 
 private let RAST_BLOCK_X = 8
 private let RAST_BLOCK_Y = 8
@@ -172,9 +174,9 @@ private func computeKMax(numTiles: Int, capacity: Int) -> UInt32 {
 
 // MARK: - Shared forward-stage encoders
 
-private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
+private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelineStates,
                           _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
-    enc.setComputePipelineState(ctx.project_and_sh_forward)
+    enc.setComputePipelineState(pso.project_and_sh_forward)
     enc.setScalar(Int32(p.numPoints), 0)
     enc.setTensor(p.means3d, 1)
 	enc.setTensor(p.scales, 2)
@@ -202,13 +204,79 @@ private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
     enc.setTensor(cache.colors, 21)
 	enc.setTensor(cache.aabb, 22)
     // buffer 23 removed (was opacity-aware AABB, reverted)
+    enc.dispatch1D(p.numPoints, pso.project_and_sh_forward)
+}
+
+// Overload for MetalContext (used by training)
+private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
+                          _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
+    enc.setComputePipelineState(ctx.project_and_sh_forward)
+    enc.setScalar(Int32(p.numPoints), 0)
+    enc.setTensor(p.means3d, 1)
+	enc.setTensor(p.scales, 2)
+    enc.setScalar(p.globScale, 3)
+	enc.setTensor(p.quats, 4)
+    var viewmat = p.viewmat
+    var projmat = p.projmat
+    enc.setBytes(&viewmat, length: MemoryLayout<simd_float4x4>.size, index: 5)
+    enc.setBytes(&projmat, length: MemoryLayout<simd_float4x4>.size, index: 6)
+    enc.setArray(k.projIntrins, 7)
+    enc.setArray(k.imgSize2, 8)
+    enc.setArray(k.tileBoundsArr, 9)
+    enc.setScalar(p.clipThresh, 10)
+    enc.setTensor(cache.xys, 11)
+	enc.setTensor(cache.depths, 12)
+    enc.setTensor(cache.radiiOut, 13)
+	enc.setTensor(cache.conics, 14)
+    enc.setTensor(cache.numTilesHit, 15)
+    enc.setScalar(p.degree, 16)
+	enc.setScalar(p.degreesToUse, 17)
+    enc.setArray(k.camPos4, 18)
+    enc.setTensor(p.featuresDc, 19)
+	enc.setTensor(p.featuresRest, 20)
+    enc.setTensor(cache.colors, 21)
+	enc.setTensor(cache.aabb, 22)
     enc.dispatch1D(p.numPoints, ctx.project_and_sh_forward)
 }
 
-private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
+private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelineStates,
                              _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
     let numTilesU32 = UInt32(k.numTiles)
     // 1. scatter_to_prealloc_bins
+    enc.setComputePipelineState(pso.scatter_to_prealloc_bins)
+    enc.setScalar(k.numPointsU32, 0); enc.setTensor(cache.xys, 1); enc.setTensor(cache.depths, 2)
+    enc.setTensor(cache.radiiOut, 3); enc.setTensor(cache.aabb, 4)
+    enc.setArray(k.tileBoundsArr, 5)
+    enc.setTensor(cache.tileScatterCounters, 6)
+    enc.setTensor(cache.preallocBins, 7)
+    enc.setTensor(cache.overflowFlag, 8)
+    enc.dispatch1D(p.numPoints, pso.scatter_to_prealloc_bins)
+    enc.barrier()
+    // 2. prefix_sum(tile_scatter_counters -> tile_offsets), single threadgroup
+    let tg2 = min(pso.prefix_sum.maxTotalThreadsPerThreadgroup, 1024)
+    enc.setComputePipelineState(pso.prefix_sum)
+    enc.setScalar(numTilesU32, 0); enc.setTensor(cache.tileScatterCounters, 1); enc.setTensor(cache.tileOffsets, 2)
+    enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                             threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
+    enc.barrier()
+    // 3. bitonic_sort_per_tile (reads prealloc_bins, writes packed + tile_bins)
+    enc.setComputePipelineState(pso.bitonic_sort_per_tile)
+    enc.setTensor(cache.tileOffsets, 0); enc.setTensor(cache.tileScatterCounters, 1)
+    enc.setTensor(cache.preallocBins, 2)
+    enc.setTensor(cache.gaussianIds, 3)
+    enc.setScalar(numTilesU32, 4)
+    enc.setTensor(cache.xys, 5); enc.setTensor(cache.conics, 6)
+    enc.setTensor(cache.colors, 7); enc.setTensor(p.opacities, 8)
+    enc.setTensor(cache.packedXyOpac, 9); enc.setTensor(cache.packedConic, 10); enc.setTensor(cache.packedRgb, 11)
+    enc.setTensor(cache.tileBins, 12)
+    enc.dispatchThreadgroups(MTLSize(width: k.numTiles, height: 1, depth: 1),
+                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+}
+
+// Overload for MetalContext (used by training)
+private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
+                             _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
+    let numTilesU32 = UInt32(k.numTiles)
     enc.setComputePipelineState(ctx.scatter_to_prealloc_bins)
     enc.setScalar(k.numPointsU32, 0); enc.setTensor(cache.xys, 1); enc.setTensor(cache.depths, 2)
     enc.setTensor(cache.radiiOut, 3); enc.setTensor(cache.aabb, 4)
@@ -218,14 +286,12 @@ private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContex
     enc.setTensor(cache.overflowFlag, 8)
     enc.dispatch1D(p.numPoints, ctx.scatter_to_prealloc_bins)
     enc.barrier()
-    // 2. prefix_sum(tile_scatter_counters -> tile_offsets), single threadgroup
     let tg2 = min(ctx.prefix_sum.maxTotalThreadsPerThreadgroup, 1024)
     enc.setComputePipelineState(ctx.prefix_sum)
     enc.setScalar(numTilesU32, 0); enc.setTensor(cache.tileScatterCounters, 1); enc.setTensor(cache.tileOffsets, 2)
     enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                              threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
     enc.barrier()
-    // 3. bitonic_sort_per_tile (reads prealloc_bins, writes packed + tile_bins)
     enc.setComputePipelineState(ctx.bitonic_sort_per_tile)
     enc.setTensor(cache.tileOffsets, 0); enc.setTensor(cache.tileScatterCounters, 1)
     enc.setTensor(cache.preallocBins, 2)
@@ -239,7 +305,7 @@ private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContex
                              threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
 }
 
-private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
+private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelineStates,
                            _ p: RenderParams, _ k: Consts, kMax: UInt32, _ cache: FusedTensorCache) 
 {
     let channels = p.channels
@@ -250,7 +316,7 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
 
     if kMax <= 1 {
         // Monolithic
-        enc.setComputePipelineState(ctx.nd_rasterize_forward)
+        enc.setComputePipelineState(pso.nd_rasterize_forward)
         enc.setArray(k.tileBoundsArr, 0)
         enc.setArray(k.imgSizeDim3, 1)
         enc.setScalar(channels, 2)
@@ -266,6 +332,67 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
         enc.dispatchThreadgroups(MTLSize(width: tileX, height: tileY, depth: 1), threadsPerThreadgroup: tg)
     } else {
         // Phase 1: chunked forward — grid (tile_x, tile_y, K_max)
+        let numPix = UInt32(w * h)
+        enc.setComputePipelineState(pso.rasterize_forward_chunked)
+        enc.setArray(k.tileBoundsArr, 0)
+        enc.setArray(k.imgSizeDim3, 1)
+        enc.setScalar(channels, 2)
+		enc.setTensor(cache.tileBins, 3)
+        enc.setTensor(cache.packedXyOpac, 4)
+		enc.setTensor(cache.packedConic, 5)
+		enc.setTensor(cache.packedRgb, 6)
+        enc.setTensor(cache.chunkT, 7)
+		enc.setTensor(cache.chunkC, 8)
+		enc.setTensor(cache.chunkFinalIdx, 9)
+        enc.setScalar(CHUNK_SIZE, 10)
+		enc.setScalar(kMax, 11)
+        enc.setArray(k.blockSizeDim2, 12)
+        enc.dispatchThreadgroups(MTLSize(width: tileX, height: tileY, depth: Int(kMax)), threadsPerThreadgroup: tg)
+        enc.barrier()
+        // Phase 2: merge — one thread per pixel
+        enc.setComputePipelineState(pso.rasterize_forward_merge)
+        enc.setScalar(numPix, 0)
+		enc.setScalar(kMax, 1)
+        enc.setTensor(cache.chunkT, 2)
+		enc.setTensor(cache.chunkC, 3)
+		enc.setTensor(cache.chunkFinalIdx, 4)
+        enc.setTensor(cache.finalTs, 5)
+		enc.setTensor(cache.finalIdx, 6)
+		enc.setTensor(cache.outImg, 7)
+        enc.setTensor(p.background, 8)
+        enc.setArray(k.imgSize2, 9)
+        enc.setScalar(channels, 10)
+        enc.dispatchThreads(MTLSize(width: w, height: h, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+    }
+}
+
+// Overload for MetalContext (used by training)
+private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
+                           _ p: RenderParams, _ k: Consts, kMax: UInt32, _ cache: FusedTensorCache) 
+{
+    let channels = p.channels
+    let w = p.intrinsics.width, h = p.intrinsics.height
+    let tileX = (w + RAST_BLOCK_X - 1) / RAST_BLOCK_X
+    let tileY = (h + RAST_BLOCK_Y - 1) / RAST_BLOCK_Y
+    let tg = MTLSize(width: RAST_BLOCK_X, height: RAST_BLOCK_Y, depth: 1)
+
+    if kMax <= 1 {
+        enc.setComputePipelineState(ctx.nd_rasterize_forward)
+        enc.setArray(k.tileBoundsArr, 0)
+        enc.setArray(k.imgSizeDim3, 1)
+        enc.setScalar(channels, 2)
+		enc.setTensor(cache.tileBins, 3)
+        enc.setTensor(cache.packedXyOpac, 4)
+		enc.setTensor(cache.packedConic, 5)
+		enc.setTensor(cache.packedRgb, 6)
+        enc.setTensor(cache.finalTs, 7)
+		enc.setTensor(cache.finalIdx, 8)
+		enc.setTensor(cache.outImg, 9)
+        enc.setTensor(p.background, 10)
+        enc.setArray(k.blockSizeDim2, 11)
+        enc.dispatchThreadgroups(MTLSize(width: tileX, height: tileY, depth: 1), threadsPerThreadgroup: tg)
+    } else {
         let numPix = UInt32(w * h)
         enc.setComputePipelineState(ctx.rasterize_forward_chunked)
         enc.setArray(k.tileBoundsArr, 0)
@@ -283,7 +410,6 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
         enc.setArray(k.blockSizeDim2, 12)
         enc.dispatchThreadgroups(MTLSize(width: tileX, height: tileY, depth: Int(kMax)), threadsPerThreadgroup: tg)
         enc.barrier()
-        // Phase 2: merge — one thread per pixel
         enc.setComputePipelineState(ctx.rasterize_forward_merge)
         enc.setScalar(numPix, 0)
 		enc.setScalar(kMax, 1)
@@ -301,16 +427,261 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
     }
 }
 
+// MARK: - GPU Execution Helper
+
+/// Pipeline states required for rendering. Can be created from any MetalContext.
+public struct RenderPipelineStates {
+    let project_and_sh_forward: MTLComputePipelineState
+    let scatter_to_prealloc_bins: MTLComputePipelineState
+    let bitonic_sort_per_tile: MTLComputePipelineState
+    let prefix_sum: MTLComputePipelineState
+    let nd_rasterize_forward: MTLComputePipelineState
+    let rasterize_forward_chunked: MTLComputePipelineState
+    let rasterize_forward_merge: MTLComputePipelineState
+    
+    public init(ctx: MetalContext) {
+        self.project_and_sh_forward = ctx.project_and_sh_forward
+        self.scatter_to_prealloc_bins = ctx.scatter_to_prealloc_bins
+        self.bitonic_sort_per_tile = ctx.bitonic_sort_per_tile
+        self.prefix_sum = ctx.prefix_sum
+        self.nd_rasterize_forward = ctx.nd_rasterize_forward
+        self.rasterize_forward_chunked = ctx.rasterize_forward_chunked
+        self.rasterize_forward_merge = ctx.rasterize_forward_merge
+    }
+}
+/*
+/// GPU execution statistics returned from executeGpuWork
+public struct GpuExecuteStats {
+    public var name: String
+    public var gpuExecutionDurationMs: Int
+    public var gpuScheduleDurationMs: Int
+}
+*/
+extension MTLCommandQueue {
+    /// Execute GPU work asynchronously on this command queue.
+    /// Returns timing statistics when GPU work is complete.
+    @discardableResult
+    func executeGpuWork(
+        jobName: String = "GPUWork",
+        _ work: (MTLCommandBuffer) throws -> Void
+    ) async throws -> GpuExecuteStats {
+        guard let cb = self.makeCommandBuffer() else {
+            throw MsplatError("Failed to create command buffer")
+        }
+        
+        try work(cb)
+        
+        let promise = SendablePromise<GpuExecuteStats>()
+        cb.addCompletedHandler { completionMeta in
+            let executeMs = (completionMeta.gpuEndTime - completionMeta.gpuStartTime) * 1000.0
+            let scheduleMs = (completionMeta.kernelEndTime - completionMeta.kernelStartTime) * 1000.0
+            let stats = GpuExecuteStats(
+                name: jobName,
+                gpuExecutionDurationMs: Int(executeMs),
+                gpuScheduleDurationMs: Int(scheduleMs)
+            )
+            promise.Resolve(stats)
+        }
+        cb.commit()
+        
+        let stats = try await promise.value
+        print("\(jobName) took \(stats.gpuExecutionDurationMs)ms (\(stats.gpuScheduleDurationMs)ms setup)")
+        return stats
+    }
+}
+
 // MARK: - Render (forward only)
 
-/// Render-only forward pass. Returns the cached (H, W, 3) output tensor; its contents
-/// are valid after the function returns.
+/// Buffers required for a render pass. Create once and reuse across multiple renders
+/// with the same dimensions.
+public struct RenderBuffers {
+    // Per-point intermediate buffers
+    var xys: MTensor
+    var depths: MTensor
+    var radiiOut: MTensor
+    var conics: MTensor
+    var numTilesHit: MTensor
+    var colors: MTensor
+    var aabb: MTensor
+    var blockTotals: MTensor
+    
+    // Per-tile sorting buffers
+    var gaussianIds: MTensor
+    var packedXyOpac: MTensor
+    var packedConic: MTensor
+    var packedRgb: MTensor
+    var tileBins: MTensor
+    var tileOffsets: MTensor
+    var tileScatterCounters: MTensor
+    var preallocBins: MTensor
+    
+    // Output buffers
+    var outImg: MTensor
+    var finalTs: MTensor
+    var finalIdx: MTensor
+    
+    // Utility buffers
+    var lossSum: MTensor
+    var overflowFlag: MTensor
+    
+    // Optional: depth-chunked rasterization buffers (allocated when kMax > 1)
+    var chunkT: MTensor?
+    var chunkC: MTensor?
+    var chunkFinalIdx: MTensor?
+    var prefixT: MTensor?
+    var afterC: MTensor?
+    
+    /// Create render buffers for the given dimensions using any Metal device.
+    public static func allocate(
+        numPoints: Int,
+        capacity: Int,
+        imageHeight: Int,
+        imageWidth: Int,
+        numTiles: Int,
+        channels: Int,
+        kMax: Int = 1,
+        device: MTLDevice
+    ) throws -> RenderBuffers {
+        let np = numPoints
+        let cap = capacity
+        let ih = imageHeight
+        let iw = imageWidth
+        let nt = numTiles
+        let ch = channels
+        
+        // Helper to create empty tensors from device
+        func makeEmpty(_ shape: [Int], _ dtype: DType = .float32) throws -> MTensor {
+            return try MTensor(device: device, shape: shape, dtype: dtype)
+        }
+        
+        var buffers = RenderBuffers(
+            xys: try makeEmpty([np, 2], .float32),
+            depths: try makeEmpty([np], .float32),
+            radiiOut: try makeEmpty([np], .int32),
+            conics: try makeEmpty([np, 3], .float32),
+            numTilesHit: try makeEmpty([np], .int32),
+            colors: try makeEmpty([np, 3], .float32),
+            aabb: try makeEmpty([np, 2], .float32),
+            blockTotals: try makeEmpty([(np + 1023) / 1024], .int32),
+            
+            gaussianIds: try makeEmpty([cap], .int32),
+            packedXyOpac: try makeEmpty([cap, 3], .float32),
+            packedConic: try makeEmpty([cap, 3], .float32),
+            packedRgb: try makeEmpty([cap, 3], .float32),
+            tileBins: try makeEmpty([nt, 2], .int32),
+            tileOffsets: try makeEmpty([nt], .int32),
+            tileScatterCounters: try makeEmpty([nt], .int32),
+            preallocBins: try makeEmpty([nt * 2048], .int64),
+            
+            outImg: try makeEmpty([ih, iw, ch], .float32),
+            finalTs: try makeEmpty([ih, iw], .float32),
+            finalIdx: try makeEmpty([ih, iw], .int32),
+            
+            lossSum: try makeEmpty([1], .float32),
+            overflowFlag: try makeEmpty([1], .int32),
+            
+            chunkT: nil,
+            chunkC: nil,
+            chunkFinalIdx: nil,
+            prefixT: nil,
+            afterC: nil
+        )
+        
+        // Allocate chunked rendering buffers if needed
+        if kMax > 1 {
+            buffers.chunkT = try makeEmpty([kMax, ih, iw], .float32)
+            buffers.chunkC = try makeEmpty([kMax, ih, iw, ch], .float32)
+            buffers.chunkFinalIdx = try makeEmpty([kMax, ih, iw], .int32)
+            buffers.prefixT = try makeEmpty([kMax, ih, iw], .float32)
+            buffers.afterC = try makeEmpty([kMax, ih, iw, ch], .float32)
+        }
+        
+        return buffers
+    }
+}
+
+/// Refined render function that uses explicit buffer allocation.
+/// Buffers can be pre-allocated and reused across multiple render calls.
+/// Works with any Metal device and command queue - no MetalContext required.
+public func msplatRenderWithBuffers(
+    _ p: RenderParams,
+    _ buffers: RenderBuffers,
+    queue: MTLCommandQueue,
+    pipelineStates: RenderPipelineStates
+) async throws -> MTensor {
+    let k = Consts(p)
+    let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
+    
+    // Validate that chunked buffers exist if needed
+    if kMax > 1 {
+        guard buffers.chunkT != nil else {
+            throw MsplatError("msplatRenderWithBuffers: kMax=\(kMax) requires chunked buffers")
+        }
+    }
+    
+    // Create a cache-like struct that wraps the provided buffers
+    var cache = FusedTensorCache()
+    cache.xys = buffers.xys
+    cache.depths = buffers.depths
+    cache.radiiOut = buffers.radiiOut
+    cache.conics = buffers.conics
+    cache.numTilesHit = buffers.numTilesHit
+    cache.colors = buffers.colors
+    cache.aabb = buffers.aabb
+    cache.blockTotals = buffers.blockTotals
+    cache.gaussianIds = buffers.gaussianIds
+    cache.packedXyOpac = buffers.packedXyOpac
+    cache.packedConic = buffers.packedConic
+    cache.packedRgb = buffers.packedRgb
+    cache.tileBins = buffers.tileBins
+    cache.tileOffsets = buffers.tileOffsets
+    cache.tileScatterCounters = buffers.tileScatterCounters
+    cache.preallocBins = buffers.preallocBins
+    cache.outImg = buffers.outImg
+    cache.finalTs = buffers.finalTs
+    cache.finalIdx = buffers.finalIdx
+    cache.lossSum = buffers.lossSum
+    cache.overflowFlag = buffers.overflowFlag
+    
+    if let chunkT = buffers.chunkT {
+        cache.chunkT = chunkT
+        cache.chunkC = buffers.chunkC!
+        cache.chunkFinalIdx = buffers.chunkFinalIdx!
+        cache.prefixT = buffers.prefixT!
+        cache.afterC = buffers.afterC!
+    }
+    
+    // Execute render and wait for completion
+    try await queue.executeGpuWork(jobName: "Render")
+    {
+        cb in
+        // Zero accumulating buffers on the GPU
+        let blit = cb.makeBlitCommandEncoder()!
+        blit.zero(cache.lossSum)
+        blit.zero(cache.overflowFlag)
+        blit.zero(cache.tileScatterCounters)
+        blit.endEncoding()
+
+        let enc = cb.makeComputeCommandEncoder()!
+        encodeProjSh(enc, pipelineStates, p, k, cache)
+        enc.barrier()
+        encodePrefixMap(enc, pipelineStates, p, k, cache)
+        enc.barrier()
+        encodeRastFwd(enc, pipelineStates, p, k, kMax: kMax, cache)
+        enc.endEncoding()
+    }
+
+    return buffers.outImg
+}
+
+/// Render-only forward pass using the internal tensor cache.
+/// Returns the cached (H, W, 3) output tensor; its contents are valid after the function returns.
 func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTensor 
 {
     ctx.renderOverflowCheck.run(numPoints: p.numPoints, cache: ctx.tensorCache)
 
     let k = Consts(p)
-    ctx.tensorCache.ensureForward(np: p.numPoints, cap: k.capacity, ih: p.intrinsics.height,
+    ctx.tensorCache.ensureForwardPassBuffers(np: p.numPoints, cap: k.capacity, ih: p.intrinsics.height,
                                iw: p.intrinsics.width, nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
 
     ctx.renderDiagCount += 1
@@ -334,30 +705,44 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1 {
-        try ctx.tensorCache.ensureChunks(k: Int(kMax), ih: p.intrinsics.height, iw: p.intrinsics.width, ch: Int(p.channels), ctx: ctx)
+        try ctx.tensorCache.ensureChunkedRenderingBuffers(k: Int(kMax), ih: p.intrinsics.height, iw: p.intrinsics.width, ch: Int(p.channels), ctx: ctx)
     }
 
-    // Execute render and wait for completion
-    try await ctx.executeAsync(jobName: "Render")
-	{
-		cb in
-        // Zero accumulating buffers on the GPU (a CPU memset would race the previous CB).
-        let blit = cb.makeBlitCommandEncoder()!
-        blit.zero(ctx.tensorCache.lossSum)
-        blit.zero(ctx.tensorCache.overflowFlag)
-        blit.zero(ctx.tensorCache.tileScatterCounters)
-        blit.endEncoding()
+    // Convert tensor cache to RenderBuffers struct
+    let buffers = RenderBuffers(
+        xys: ctx.tensorCache.xys,
+        depths: ctx.tensorCache.depths,
+        radiiOut: ctx.tensorCache.radiiOut,
+        conics: ctx.tensorCache.conics,
+        numTilesHit: ctx.tensorCache.numTilesHit,
+        colors: ctx.tensorCache.colors,
+        aabb: ctx.tensorCache.aabb,
+        blockTotals: ctx.tensorCache.blockTotals,
+        gaussianIds: ctx.tensorCache.gaussianIds,
+        packedXyOpac: ctx.tensorCache.packedXyOpac,
+        packedConic: ctx.tensorCache.packedConic,
+        packedRgb: ctx.tensorCache.packedRgb,
+        tileBins: ctx.tensorCache.tileBins,
+        tileOffsets: ctx.tensorCache.tileOffsets,
+        tileScatterCounters: ctx.tensorCache.tileScatterCounters,
+        preallocBins: ctx.tensorCache.preallocBins,
+        outImg: ctx.tensorCache.outImg,
+        finalTs: ctx.tensorCache.finalTs,
+        finalIdx: ctx.tensorCache.finalIdx,
+        lossSum: ctx.tensorCache.lossSum,
+        overflowFlag: ctx.tensorCache.overflowFlag,
+        chunkT: kMax > 1 ? ctx.tensorCache.chunkT : nil,
+        chunkC: kMax > 1 ? ctx.tensorCache.chunkC : nil,
+        chunkFinalIdx: kMax > 1 ? ctx.tensorCache.chunkFinalIdx : nil,
+        prefixT: kMax > 1 ? ctx.tensorCache.prefixT : nil,
+        afterC: kMax > 1 ? ctx.tensorCache.afterC : nil
+    )
 
-        let enc = cb.makeComputeCommandEncoder()!
-        encodeProjSh(enc, ctx, p, k, ctx.tensorCache)
-        enc.barrier()
-        encodePrefixMap(enc, ctx, p, k, ctx.tensorCache)
-        enc.barrier()
-        encodeRastFwd(enc, ctx, p, k, kMax: kMax, ctx.tensorCache)
-        enc.endEncoding()
-    }
+    // Create pipeline states from context
+    let pso = RenderPipelineStates(ctx: ctx)
 
-    return ctx.tensorCache.outImg
+    // Delegate to the refined render function
+    return try await msplatRenderWithBuffers(p, buffers, queue: ctx.queue, pipelineStates: pso)
 }
 
 // MARK: - Fused training step
@@ -395,12 +780,12 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
                       Double(total) / Double(max(1, ntPrev)), Int(maxc)))
     }
 
-    ctx.tensorCache.ensureForward(np: p.numPoints, cap: k.capacity, ih: h, iw: w, nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
-    ctx.tensorCache.ensureBackward(np: p.numPoints, frb: t.featuresRestBases, ctx: ctx)
+    ctx.tensorCache.ensureForwardPassBuffers(np: p.numPoints, cap: k.capacity, ih: h, iw: w, nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
+    ctx.tensorCache.ensureBackwardPassBuffers(np: p.numPoints, frb: t.featuresRestBases, ctx: ctx)
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1 {
-        try ctx.tensorCache.ensureChunks(k: Int(kMax), ih: h, iw: w, ch: Int(p.channels), ctx: ctx)
+        try ctx.tensorCache.ensureChunkedRenderingBuffers(k: Int(kMax), ih: h, iw: w, ch: Int(p.channels), ctx: ctx)
     }
     let bwdKMax = kMax
 
