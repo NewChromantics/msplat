@@ -181,8 +181,8 @@ struct FusedTensorCache {
 //	metal objects are threadsafe, stats are not 
 public final class MetalContext : @unchecked Sendable 
 {
-    let device: MTLDevice
-    let queue: MTLCommandQueue
+    public let device: MTLDevice
+    public let queue: MTLCommandQueue
 
     // Per-stage GPU timestamp profiling
     var counterSampleBuffer: MTLCounterSampleBuffer?

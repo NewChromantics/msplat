@@ -14,6 +14,30 @@ func cross(_ a: (Float, Float, Float), _ b: (Float, Float, Float)) -> (Float, Fl
 	(a.1*b.2 - a.2*b.1, a.2*b.0 - a.0*b.2, a.0*b.1 - a.1*b.0)
 }
 
+/// Build a perspective projection matrix from intrinsics
+func buildProjectionMatrix(fx: Float, fy: Float, cx: Float, cy: Float, 
+                           width: Float, height: Float, near: Float, far: Float) -> simd_float4x4 {
+	// OpenGL-style projection matrix
+	let znear = near
+	let zfar = far
+	let w = width
+	let h = height
+	
+	let m00 = 2.0 * fx / w
+	let m11 = 2.0 * fy / h
+	let m02 = -(2.0 * cx / w - 1.0)
+	let m12 = -(2.0 * cy / h - 1.0)
+	let m22 = -(zfar + znear) / (zfar - znear)
+	let m23 = -2.0 * zfar * znear / (zfar - znear)
+	
+	return simd_float4x4(
+		simd_float4(m00, 0, 0, 0),
+		simd_float4(0, m11, 0, 0),
+		simd_float4(m02, m12, m22, -1),
+		simd_float4(0, 0, m23, 0)
+	)
+}
+
 
 
 /// Build a cam-to-world matrix (4x4 row-major, OpenGL: Y-up, Z-back)
@@ -123,7 +147,8 @@ struct MemorySummary: Sendable {
 final class Engine
 {
 	//	last Nth step render
-	var image: CGImage?
+	var trainerRenderedImage: CGImage?
+	var trainerRenderedImage2: CGImage?
 	var splats : [PlySplatPoint] = []
 	
 	var iteration: Int = 0
@@ -240,15 +265,80 @@ final class Engine
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 				
-				let splatRender = try await trainer.render(cameraIndex: renderCameraIndex % inputData.numCameras, format: .rgba)
+				let trainerRender = try await trainer.render(cameraIndex: renderCameraIndex % inputData.numCameras, format: .rgba)
 				renderCameraIndex += 1
 				
 				let splats = try trainer.GetSplats()
 				
+				// Get camera for rendering
+				let splatRenderCamera = inputData.cameras[renderCameraIndex % inputData.numCameras]
+				let splatImageWidth = trainerRender.width
+				let splatImageHeight = trainerRender.height
+				
+				// Extract camera parameters
+				let fx = splatRenderCamera.meta.fx
+				let fy = splatRenderCamera.meta.fy
+				let cx = splatRenderCamera.meta.cx
+				let cy = splatRenderCamera.meta.cy
+				
+				// Convert camToWorld from [Float] to simd_float4x4
+				let camToWorldArray = splatRenderCamera.meta.camToWorld
+				let camToWorld = simd_float4x4(
+					simd_float4(camToWorldArray[0], camToWorldArray[1], camToWorldArray[2], camToWorldArray[3]),
+					simd_float4(camToWorldArray[4], camToWorldArray[5], camToWorldArray[6], camToWorldArray[7]),
+					simd_float4(camToWorldArray[8], camToWorldArray[9], camToWorldArray[10], camToWorldArray[11]),
+					simd_float4(camToWorldArray[12], camToWorldArray[13], camToWorldArray[14], camToWorldArray[15])
+				)
+				
+				// Build projection matrix
+				let projMat = buildProjectionMatrix(
+					fx: fx,
+					fy: fy,
+					cx: cx,
+					cy: cy,
+					width: Float(splatImageWidth),
+					height: Float(splatImageHeight),
+					near: 0.01,
+					far: 1000.0
+				)
+				
+				// Render from the splats without trainer buffers
+				let splatRenderTensor = try await msplatRenderSplats(
+					splats: splats,
+					device: metalContext.device,
+					queue: metalContext.queue,
+					pipelineStates: RenderPipelineStates(ctx: metalContext),
+					camToWorld: camToWorld,
+					projectionMatrix: projMat,
+					intrinsics: CameraIntrinsics(
+						fx: fx,
+						fy: fy,
+						cx: cx,
+						cy: cy,
+						width: splatImageWidth,
+						height: splatImageHeight
+					),
+					shDegree: 3,
+					backgroundColor: simd_float3(0, 0, 0),
+					format: .rgba
+				)
+				func ImageTensorToImage(imageTensor:MTensor) throws -> RGBImage
+				{
+					print("ImageTensor shape: \(imageTensor.shape)")
+					let h = imageTensor.size(0)
+					let w = imageTensor.size(1)
+					let ch = imageTensor.size(2)
+					let format: RGBImage.ImageFormat = (ch == 4) ? .rgba : .rgb
+					let pixels = Array(UnsafeBufferPointer(start: imageTensor.floats(), count: h * w * ch))
+					return try RGBImage(data: pixels, width: w, height: h, format: format)
+				}
+				let splatRender = try ImageTensorToImage(imageTensor: splatRenderTensor)
+				
 				//	this can be done on another thread
 				do
 				{
-					let cgImage = try splatRender.makeCGImage(useFloatComponents: true)
+					let trainercgImage = try trainerRender.makeCGImage(useFloatComponents: true)
+					let splatRenderCgImage = try splatRender.makeCGImage(useFloatComponents: true)
 					let iter = Int(stats.iteration)
 					let count = Int(stats.splatCount)
 					let elapsedSecs = batchEnd - startTime
@@ -263,7 +353,8 @@ final class Engine
 					Task.detached {
 						await MainActor.run 
 						{
-							self.image = cgImage
+							self.trainerRenderedImage = trainercgImage
+							self.trainerRenderedImage2 = splatRenderCgImage
 							self.splats = splats
 							self.iteration = iter
 							self.splatCount = count

@@ -63,17 +63,17 @@ extension MTLBlitCommandEncoder {
 
 /// Camera intrinsics parameters
 public struct CameraIntrinsics {
-    var fx: Float
-    var fy: Float
-    var cx: Float
-    var cy: Float
-    var width: Int
-    var height: Int
+    public var fx: Float
+    public var fy: Float
+    public var cx: Float
+    public var cy: Float
+    public var width: Int
+    public var height: Int
     
-    var imgWidth: UInt32 { UInt32(width) }
-    var imgHeight: UInt32 { UInt32(height) }
+    public var imgWidth: UInt32 { UInt32(width) }
+    public var imgHeight: UInt32 { UInt32(height) }
     
-    init(fx: Float, fy: Float, cx: Float, cy: Float, width: Int, height: Int) {
+    public init(fx: Float, fy: Float, cx: Float, cy: Float, width: Int, height: Int) {
         self.fx = fx
         self.fy = fy
         self.cx = cx
@@ -207,38 +207,6 @@ private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipeline
     enc.dispatch1D(p.numPoints, pso.project_and_sh_forward)
 }
 
-// Overload for MetalContext (used by training)
-private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
-                          _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
-    enc.setComputePipelineState(ctx.project_and_sh_forward)
-    enc.setScalar(Int32(p.numPoints), 0)
-    enc.setTensor(p.means3d, 1)
-	enc.setTensor(p.scales, 2)
-    enc.setScalar(p.globScale, 3)
-	enc.setTensor(p.quats, 4)
-    var viewmat = p.viewmat
-    var projmat = p.projmat
-    enc.setBytes(&viewmat, length: MemoryLayout<simd_float4x4>.size, index: 5)
-    enc.setBytes(&projmat, length: MemoryLayout<simd_float4x4>.size, index: 6)
-    enc.setArray(k.projIntrins, 7)
-    enc.setArray(k.imgSize2, 8)
-    enc.setArray(k.tileBoundsArr, 9)
-    enc.setScalar(p.clipThresh, 10)
-    enc.setTensor(cache.xys, 11)
-	enc.setTensor(cache.depths, 12)
-    enc.setTensor(cache.radiiOut, 13)
-	enc.setTensor(cache.conics, 14)
-    enc.setTensor(cache.numTilesHit, 15)
-    enc.setScalar(p.degree, 16)
-	enc.setScalar(p.degreesToUse, 17)
-    enc.setArray(k.camPos4, 18)
-    enc.setTensor(p.featuresDc, 19)
-	enc.setTensor(p.featuresRest, 20)
-    enc.setTensor(cache.colors, 21)
-	enc.setTensor(cache.aabb, 22)
-    enc.dispatch1D(p.numPoints, ctx.project_and_sh_forward)
-}
-
 private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelineStates,
                              _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
     let numTilesU32 = UInt32(k.numTiles)
@@ -261,38 +229,6 @@ private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipel
     enc.barrier()
     // 3. bitonic_sort_per_tile (reads prealloc_bins, writes packed + tile_bins)
     enc.setComputePipelineState(pso.bitonic_sort_per_tile)
-    enc.setTensor(cache.tileOffsets, 0); enc.setTensor(cache.tileScatterCounters, 1)
-    enc.setTensor(cache.preallocBins, 2)
-    enc.setTensor(cache.gaussianIds, 3)
-    enc.setScalar(numTilesU32, 4)
-    enc.setTensor(cache.xys, 5); enc.setTensor(cache.conics, 6)
-    enc.setTensor(cache.colors, 7); enc.setTensor(p.opacities, 8)
-    enc.setTensor(cache.packedXyOpac, 9); enc.setTensor(cache.packedConic, 10); enc.setTensor(cache.packedRgb, 11)
-    enc.setTensor(cache.tileBins, 12)
-    enc.dispatchThreadgroups(MTLSize(width: k.numTiles, height: 1, depth: 1),
-                             threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
-}
-
-// Overload for MetalContext (used by training)
-private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
-                             _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
-    let numTilesU32 = UInt32(k.numTiles)
-    enc.setComputePipelineState(ctx.scatter_to_prealloc_bins)
-    enc.setScalar(k.numPointsU32, 0); enc.setTensor(cache.xys, 1); enc.setTensor(cache.depths, 2)
-    enc.setTensor(cache.radiiOut, 3); enc.setTensor(cache.aabb, 4)
-    enc.setArray(k.tileBoundsArr, 5)
-    enc.setTensor(cache.tileScatterCounters, 6)
-    enc.setTensor(cache.preallocBins, 7)
-    enc.setTensor(cache.overflowFlag, 8)
-    enc.dispatch1D(p.numPoints, ctx.scatter_to_prealloc_bins)
-    enc.barrier()
-    let tg2 = min(ctx.prefix_sum.maxTotalThreadsPerThreadgroup, 1024)
-    enc.setComputePipelineState(ctx.prefix_sum)
-    enc.setScalar(numTilesU32, 0); enc.setTensor(cache.tileScatterCounters, 1); enc.setTensor(cache.tileOffsets, 2)
-    enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
-                             threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
-    enc.barrier()
-    enc.setComputePipelineState(ctx.bitonic_sort_per_tile)
     enc.setTensor(cache.tileOffsets, 0); enc.setTensor(cache.tileScatterCounters, 1)
     enc.setTensor(cache.preallocBins, 2)
     enc.setTensor(cache.gaussianIds, 3)
@@ -351,66 +287,6 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelin
         enc.barrier()
         // Phase 2: merge — one thread per pixel
         enc.setComputePipelineState(pso.rasterize_forward_merge)
-        enc.setScalar(numPix, 0)
-		enc.setScalar(kMax, 1)
-        enc.setTensor(cache.chunkT, 2)
-		enc.setTensor(cache.chunkC, 3)
-		enc.setTensor(cache.chunkFinalIdx, 4)
-        enc.setTensor(cache.finalTs, 5)
-		enc.setTensor(cache.finalIdx, 6)
-		enc.setTensor(cache.outImg, 7)
-        enc.setTensor(p.background, 8)
-        enc.setArray(k.imgSize2, 9)
-        enc.setScalar(channels, 10)
-        enc.dispatchThreads(MTLSize(width: w, height: h, depth: 1),
-                            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
-    }
-}
-
-// Overload for MetalContext (used by training)
-private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ ctx: MetalContext,
-                           _ p: RenderParams, _ k: Consts, kMax: UInt32, _ cache: FusedTensorCache) 
-{
-    let channels = p.channels
-    let w = p.intrinsics.width, h = p.intrinsics.height
-    let tileX = (w + RAST_BLOCK_X - 1) / RAST_BLOCK_X
-    let tileY = (h + RAST_BLOCK_Y - 1) / RAST_BLOCK_Y
-    let tg = MTLSize(width: RAST_BLOCK_X, height: RAST_BLOCK_Y, depth: 1)
-
-    if kMax <= 1 {
-        enc.setComputePipelineState(ctx.nd_rasterize_forward)
-        enc.setArray(k.tileBoundsArr, 0)
-        enc.setArray(k.imgSizeDim3, 1)
-        enc.setScalar(channels, 2)
-		enc.setTensor(cache.tileBins, 3)
-        enc.setTensor(cache.packedXyOpac, 4)
-		enc.setTensor(cache.packedConic, 5)
-		enc.setTensor(cache.packedRgb, 6)
-        enc.setTensor(cache.finalTs, 7)
-		enc.setTensor(cache.finalIdx, 8)
-		enc.setTensor(cache.outImg, 9)
-        enc.setTensor(p.background, 10)
-        enc.setArray(k.blockSizeDim2, 11)
-        enc.dispatchThreadgroups(MTLSize(width: tileX, height: tileY, depth: 1), threadsPerThreadgroup: tg)
-    } else {
-        let numPix = UInt32(w * h)
-        enc.setComputePipelineState(ctx.rasterize_forward_chunked)
-        enc.setArray(k.tileBoundsArr, 0)
-        enc.setArray(k.imgSizeDim3, 1)
-        enc.setScalar(channels, 2)
-		enc.setTensor(cache.tileBins, 3)
-        enc.setTensor(cache.packedXyOpac, 4)
-		enc.setTensor(cache.packedConic, 5)
-		enc.setTensor(cache.packedRgb, 6)
-        enc.setTensor(cache.chunkT, 7)
-		enc.setTensor(cache.chunkC, 8)
-		enc.setTensor(cache.chunkFinalIdx, 9)
-        enc.setScalar(CHUNK_SIZE, 10)
-		enc.setScalar(kMax, 11)
-        enc.setArray(k.blockSizeDim2, 12)
-        enc.dispatchThreadgroups(MTLSize(width: tileX, height: tileY, depth: Int(kMax)), threadsPerThreadgroup: tg)
-        enc.barrier()
-        enc.setComputePipelineState(ctx.rasterize_forward_merge)
         enc.setScalar(numPix, 0)
 		enc.setScalar(kMax, 1)
         enc.setTensor(cache.chunkT, 2)
@@ -745,6 +621,130 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
     return try await msplatRenderWithBuffers(p, buffers, queue: ctx.queue, pipelineStates: pso)
 }
 
+/// Convenience function to render splat points directly with camera parameters.
+/// Creates necessary buffers and renders the scene from the given camera pose.
+public func msplatRenderSplats(
+    splats: [PlySplatPoint],
+    device: MTLDevice,
+    queue: MTLCommandQueue,
+    pipelineStates: RenderPipelineStates,
+    camToWorld: simd_float4x4,
+    projectionMatrix: simd_float4x4,
+    intrinsics: CameraIntrinsics,
+    shDegree: Int = 3,
+    backgroundColor: simd_float3 = simd_float3(0, 0, 0),
+	format:RGBImage.ImageFormat
+) async throws -> MTensor {
+    
+    let numSplats = splats.count
+    guard numSplats > 0 else {
+        throw MsplatError("msplatRenderSplats: no splats provided")
+    }
+    
+    // Create GPU tensors from splat data
+    let means3d = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
+    let scales = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
+    let quats = try MTensor(device: device, shape: [numSplats, 4], dtype: .float32)
+    let featuresDc = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
+    let opacities = try MTensor(device: device, shape: [numSplats, 1], dtype: .float32)
+    let background = try MTensor(device: device, shape: [3], dtype: .float32)
+    
+    // Upload splat data
+    let means3dPtr = means3d.floats()
+    let scalesPtr = scales.floats()
+    let quatsPtr = quats.floats()
+    let featuresDcPtr = featuresDc.floats()
+    let opacitiesPtr = opacities.floats()
+    
+    for i in 0..<numSplats {
+        let s = splats[i]
+        // Position
+        means3dPtr[i * 3 + 0] = s.position.x
+        means3dPtr[i * 3 + 1] = s.position.y
+        means3dPtr[i * 3 + 2] = s.position.z
+        // Scale (log space)
+        scalesPtr[i * 3 + 0] = s.scaleLog.x
+        scalesPtr[i * 3 + 1] = s.scaleLog.y
+        scalesPtr[i * 3 + 2] = s.scaleLog.z
+        // Quaternion (w, x, y, z)
+        quatsPtr[i * 4 + 0] = s.quaternionWxyz.x  // w
+        quatsPtr[i * 4 + 1] = s.quaternionWxyz.y  // x
+        quatsPtr[i * 4 + 2] = s.quaternionWxyz.z  // y
+        quatsPtr[i * 4 + 3] = s.quaternionWxyz.w  // z
+        // SH DC term
+        featuresDcPtr[i * 3 + 0] = s.shDc.x
+        featuresDcPtr[i * 3 + 1] = s.shDc.y
+        featuresDcPtr[i * 3 + 2] = s.shDc.z
+        // Opacity (logit)
+        opacitiesPtr[i] = s.opacityLogit
+    }
+    
+    // Background color
+    let bgPtr = background.floats()
+    bgPtr[0] = backgroundColor.x
+    bgPtr[1] = backgroundColor.y
+    bgPtr[2] = backgroundColor.z
+    
+    // Create empty tensor for higher-order SH (we're only using DC term)
+    // Note: Can't create tensor with 0 dimension, so create minimal [numSplats, 1, 3] but won't be used
+    let featuresRest = try MTensor(device: device, shape: [numSplats, 1, 3], dtype: .float32)
+    
+    // Calculate camera position from camToWorld matrix
+    let camPos = simd_float3(camToWorld.columns.3.x, camToWorld.columns.3.y, camToWorld.columns.3.z)
+    
+    // Calculate tile bounds
+    let tileSizeX = 16
+    let tileSizeY = 16
+    let tilesX = (intrinsics.width + tileSizeX - 1) / tileSizeX
+    let tilesY = (intrinsics.height + tileSizeY - 1) / tileSizeY
+    
+    // Create render parameters
+    let renderParams = RenderParams(
+        numPoints: numSplats,
+        means3d: means3d,
+        scales: scales,
+        globScale: 1.0,
+        quats: quats,
+        viewmat: camToWorld.inverse,  // world-to-cam
+        projmat: projectionMatrix,
+        intrinsics: intrinsics,
+        tileBounds: (tilesX, tilesY, 1),
+        clipThresh: 0.01,
+        degree: UInt32(shDegree),
+        degreesToUse: 0,  // Only DC term
+        camPos: camPos,
+        featuresDc: featuresDc,
+        featuresRest: featuresRest,
+        opacities: opacities,
+        background: background,
+		channels: UInt32(format.channels)
+    )
+    
+    // Calculate buffer requirements
+    let k = Consts(renderParams)
+    let kMax = Int(computeKMax(numTiles: k.numTiles, capacity: k.capacity))
+    
+    // Allocate render buffers
+    let buffers = try RenderBuffers.allocate(
+        numPoints: numSplats,
+        capacity: k.capacity,
+        imageHeight: intrinsics.height,
+        imageWidth: intrinsics.width,
+        numTiles: k.numTiles,
+		channels: format.channels,
+        kMax: kMax,
+        device: device
+    )
+    
+    // Render!
+    return try await msplatRenderWithBuffers(
+        renderParams,
+        buffers,
+        queue: queue,
+        pipelineStates: pipelineStates
+    )
+}
+
 // MARK: - Fused training step
 
 /// Fused forward + loss + backward + Adam + grad-stats in one command buffer.
@@ -754,6 +754,9 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
 
     let k = Consts(p)
     let w = p.intrinsics.width, h = p.intrinsics.height
+    
+    // Create pipeline states from context
+    let pso = RenderPipelineStates(ctx: ctx)
 
     // Periodic diagnostic on the PREVIOUS iteration's counters — must run before
     // ensureForward/ensureBackward, which reallocate whenever sizes change.
@@ -987,9 +990,9 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
             }
 
             let stages: [(MTLComputeCommandEncoder) -> Void] = [
-                { encodeProjSh($0, ctx, p, k, ctx.tensorCache) },
-                { encodePrefixMap($0, ctx, p, k, ctx.tensorCache) },
-                { encodeRastFwd($0, ctx, p, k, kMax: kMax, ctx.tensorCache) },
+                { encodeProjSh($0, pso, p, k, ctx.tensorCache) },
+                { encodePrefixMap($0, pso, p, k, ctx.tensorCache) },
+                { encodeRastFwd($0, pso, p, k, kMax: kMax, ctx.tensorCache) },
                 encodeLossFwdBwd,
                 encodeRastBwd,
                 encodeProjShBwdAdam,
@@ -1049,11 +1052,11 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
             // Production: single encoder for everything
             blitZero(cb)
             let enc = cb.makeComputeCommandEncoder()!
-            encodeProjSh(enc, ctx, p, k, ctx.tensorCache)
+            encodeProjSh(enc, pso, p, k, ctx.tensorCache)
             enc.barrier()
-            encodePrefixMap(enc, ctx, p, k, ctx.tensorCache)
+            encodePrefixMap(enc, pso, p, k, ctx.tensorCache)
             enc.barrier()
-            encodeRastFwd(enc, ctx, p, k, kMax: kMax, ctx.tensorCache)
+            encodeRastFwd(enc, pso, p, k, kMax: kMax, ctx.tensorCache)
             enc.barrier()
             encodeLossFwdBwd(enc)
             enc.barrier()

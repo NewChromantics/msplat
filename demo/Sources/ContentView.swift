@@ -263,7 +263,14 @@ struct ContentView: View
 	{
 		HSplitView
 		{
-			if let img = engine.image 
+			if let img = engine.trainerRenderedImage 
+			{
+				Image(nsImage: NSImage(cgImage: img, size: img.size))
+					.resizable()
+					.aspectRatio(contentMode: .fit)
+					.frame(minWidth: 300,maxWidth: 500,maxHeight: .infinity)
+			}
+			if let img = engine.trainerRenderedImage2
 			{
 				Image(nsImage: NSImage(cgImage: img, size: img.size))
 					.resizable()

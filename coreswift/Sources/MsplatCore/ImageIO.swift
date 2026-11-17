@@ -101,7 +101,7 @@ public struct RGBImage
 		case rgb
 		case rgba
 		
-		var channels : Int
+		public var channels : Int
 		{
 			switch self
 			{
