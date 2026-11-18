@@ -67,13 +67,12 @@ extension CameraMeta
 			}
 		}
 		
-		var newCache = CameraRenderParams()
+		var newCache = CameraRenderParams(camToWorld: self.camToWorld)
 		newCache.viewMat = try metalContext.makeEmpty([4, 4])
 		newCache.viewMat.copyIn(viewMatrix)
 		newCache.projectionMatrix = simd_float4x4(rowMajor:projectionMatrix)
 		newCache.projViewMat = try metalContext.makeEmpty([4, 4])
 		newCache.projViewMat.copyIn(pvm)
-		newCache.camPos = SIMD3<Float>(T[0], T[1], T[2])
 		newCache.fovX = fovX
 		newCache.fovY = fovY
 		return newCache

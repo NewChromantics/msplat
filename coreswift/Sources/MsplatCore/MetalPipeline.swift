@@ -518,6 +518,8 @@ public func msplatRenderWithBuffers(
             throw MsplatError("msplatRenderWithBuffers: kMax=\(kMax) requires chunked buffers")
         }
     }
+	
+	print("msplatRenderWithBuffers - intrinsics \(renderParams.intrinsics)")
     
     // Create a cache-like struct that wraps the provided buffers
     var cache = FusedTensorCache()
@@ -653,8 +655,7 @@ public func msplatRenderSplats(
     device: MTLDevice,
     queue: MTLCommandQueue,
     pipelineStates: RenderPipelineStates,
-    camToWorld: simd_float4x4,
-    projectionMatrix: simd_float4x4,
+	cameraRenderParams:CameraRenderParams,
     intrinsics: CameraIntrinsics,
     shDegree: Int = 3,
     backgroundColor: simd_float3 = simd_float3(0, 0, 0),
@@ -714,15 +715,6 @@ public func msplatRenderSplats(
     // Note: Can't create tensor with 0 dimension, so create minimal [numSplats, 1, 3] but won't be used
     let featuresRest = try MTensor(device: device, shape: [numSplats, 1, 3], dtype: .float32)
     
-	
-	
-	
-	//	this shuld be PrepareCam
-	
-	
-    // Calculate camera position from camToWorld matrix
-    let camPos = simd_float3(camToWorld.columns.3.x, camToWorld.columns.3.y, camToWorld.columns.3.z)
-    
     // Calculate tile bounds
     let tileSizeX = 16
     let tileSizeY = 16
@@ -730,13 +722,9 @@ public func msplatRenderSplats(
     let tilesY = (intrinsics.height + tileSizeY - 1) / tileSizeY
     
     // Compute view matrix and combined projection-view matrix (matching Model.renderParams)
-    let viewMatrix = camToWorld.inverse  // world-to-cam
-    let projViewMatrix = projectionMatrix * viewMatrix  // Combined matrix like Model does
+	let viewMatrix = cameraRenderParams.camToWorld.inverse  // world-to-cam
+	let projViewMatrix = cameraRenderParams.projectionMatrix * viewMatrix  // Combined matrix like Model does
     
-	
-	
-	
-	
 	
 	
     // Create render parameters
@@ -753,7 +741,7 @@ public func msplatRenderSplats(
         clipThresh: 0.01,
         degree: UInt32(shDegree),
         degreesToUse: 0,  // Only DC term
-        camPos: camPos,
+		camPos: cameraRenderParams.camPos,
         featuresDc: featuresDc,
         featuresRest: featuresRest,
         opacities: opacities,
@@ -777,6 +765,8 @@ public func msplatRenderSplats(
         device: device
     )
     
+	//	dont these buffers need to be filled?
+	
     // Render!
     return try await msplatRenderWithBuffers(
 		renderParams:renderParams,
@@ -804,7 +794,8 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
     ctx.trainDiagIt += 1
     if [200, 1000, 2500, 4500, 6500].contains(ctx.trainDiagIt)
         && ctx.tensorCache.tileScatterCounters.defined && ctx.tensorCache.fwdNumPoints > 0
-        && benchmarkEnabled {
+        && benchmarkEnabled 
+	{
         // Sync to read diagnostic data
        // try await ctx.executeAsync { _ in }
         let c = ctx.tensorCache
