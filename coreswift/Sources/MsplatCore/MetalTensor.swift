@@ -119,6 +119,22 @@ public struct MTensor
 	public func float3s() -> UnsafeMutablePointer<simd_float3> { pointer(simd_float3.self) }
 	public func float4s() -> UnsafeMutablePointer<simd_float4> { pointer(simd_float4.self) }
 	public func quat4s() -> UnsafeMutablePointer<simd_quatf> { pointer(simd_quatf.self) }
+	
+	/// Get a buffer pointer with count for safer access
+	public func floatBuffer() -> UnsafeMutableBufferPointer<Float> {
+		guard dtype == .float32 else {
+			fatalError("MTensor: floatBuffer() called on non-float32 tensor")
+		}
+		return UnsafeMutableBufferPointer(start: floats(), count: numel)
+	}
+	
+	/// Copy tensor data to a Swift array
+	public func toFloatArray() -> [Float] {
+		guard dtype == .float32 else {
+			fatalError("MTensor: toFloatArray() called on non-float32 tensor")
+		}
+		return Array(floatBuffer())
+	}
 
     /// Convert 4x4 tensor to simd_float4x4 matrix (assumes row-major layout)
     func toFloat4x4() -> simd_float4x4 {
@@ -179,5 +195,16 @@ public struct MTensor
 		{
 			print("Tensor with gpu & cpu data")
 		}
+	}
+	
+	static public func makeEmpty(device:MTLDevice,_ shape: [Int],dtype:DType = .float32) throws -> MTensor {
+		return try MTensor(device: device, shape: shape, dtype: dtype)
+	}
+	
+	/// Create a zero-initialized tensor with the given shape and data type.
+	static public func makeZeros(device:MTLDevice,_ shape: [Int],dtype: DType = .float32) throws -> MTensor {
+		let t = try makeEmpty(device:device, shape, dtype: dtype)
+		t.zero()
+		return t
 	}
 }

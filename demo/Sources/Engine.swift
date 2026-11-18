@@ -40,10 +40,10 @@ func buildProjectionMatrix(fx: Float, fy: Float, cx: Float, cy: Float,
 
 
 
-/// Build a cam-to-world matrix (4x4 row-major, OpenGL: Y-up, Z-back)
+/// Build a cam-to-world matrix (4x4, OpenGL: Y-up, Z-back)
 /// looking from `eye` toward `target` with a given world-up hint.
 func lookAtCamToWorld(eye: (Float, Float, Float), target: (Float, Float, Float),
-					  up: (Float, Float, Float)) -> [Float] {
+					  up: (Float, Float, Float)) -> simd_float4x4 {
 	// Forward = normalize(eye - target)  (camera looks along -Z in OpenGL)
 	let f = normalize((eye.0 - target.0, eye.1 - target.1, eye.2 - target.2))
 	// Right = normalize(up × forward)
@@ -51,13 +51,13 @@ func lookAtCamToWorld(eye: (Float, Float, Float), target: (Float, Float, Float),
 	// True up = forward × right
 	let u = cross(f, r)
 	
-	// Row-major cam-to-world: columns are right, up, forward; last column is eye position
-	return [
-		r.0, u.0, f.0, eye.0,
-		r.1, u.1, f.1, eye.1,
-		r.2, u.2, f.2, eye.2,
-		0,   0,   0,     1,
-	]
+	// Build cam-to-world matrix: columns are right, up, forward; last column is eye position
+	return simd_float4x4(
+		simd_float4(r.0, r.1, r.2, 0),
+		simd_float4(u.0, u.1, u.2, 0),
+		simd_float4(f.0, f.1, f.2, 0),
+		simd_float4(eye.0, eye.1, eye.2, 1)
+	)
 }
 
 struct OrbitParams {
@@ -72,7 +72,7 @@ struct OrbitParams {
 /// Compute orbit parameters from dataset camera poses.
 /// Derives the ground plane from the average camera up-vector (column 1 of camToWorld).
 /// The orbit center is where cameras are looking, not where they are.
-func computeOrbitParams(_ poses: [[Float]]) -> OrbitParams {
+func computeOrbitParams(_ poses: [simd_float4x4]) -> OrbitParams {
 	let n = Float(poses.count)
 	
 	// Camera positions and up vectors
@@ -80,8 +80,14 @@ func computeOrbitParams(_ poses: [[Float]]) -> OrbitParams {
 	var ux: Float = 0, uy: Float = 0, uz: Float = 0
 	
 	for p in poses {
-		cx += p[3]; cy += p[7]; cz += p[11]
-		ux += p[1]; uy += p[5]; uz += p[9]
+		// Position is in column 3
+		cx += p.columns.3.x
+		cy += p.columns.3.y
+		cz += p.columns.3.z
+		// Up vector is column 1
+		ux += p.columns.1.x
+		uy += p.columns.1.y
+		uz += p.columns.1.z
 	}
 	cx /= n; cy /= n; cz /= n
 	let up = normalize((ux, uy, uz))
@@ -89,7 +95,9 @@ func computeOrbitParams(_ poses: [[Float]]) -> OrbitParams {
 	// Orbit radius = average distance from centroid projected onto ground plane
 	var totalR: Float = 0
 	for p in poses {
-		let dx = p[3] - cx, dy = p[7] - cy, dz = p[11] - cz
+		let dx = p.columns.3.x - cx
+		let dy = p.columns.3.y - cy
+		let dz = p.columns.3.z - cz
 		let dot = dx*up.0 + dy*up.1 + dz*up.2
 		let gx = dx - dot*up.0, gy = dy - dot*up.1, gz = dz - dot*up.2
 		totalR += sqrt(gx*gx + gy*gy + gz*gz)
@@ -228,6 +236,43 @@ final class Engine
 		self.trainingTask = Task { }
 	}
 	
+	/// Render an image from splat data using the same camera parameters as the trainer.
+	/// This replicates the trainer's rendering pipeline without using the trainer's internal buffers.
+	nonisolated private func renderFromSplats(
+		_ splats: [PlySplatPoint],
+		camera: RuntimeCamera,
+		targetWidth: Int,
+		targetHeight: Int
+	) async throws -> RGBImage
+	{
+		let cameraRenderParams = try camera.meta.GetCameraRenderParams(metalContext: metalContext, fovX: camera.meta.intrinsics.fovX, fovY: camera.meta.intrinsics.fovY)
+		
+		
+		// Render from the splats without trainer buffers
+		let splatRenderTensor = try await msplatRenderSplats(
+			splats: splats,
+			device: metalContext.device,
+			queue: metalContext.queue,
+			pipelineStates: RenderPipelineStates(ctx: metalContext),
+			camToWorld: camera.meta.camToWorld,
+			projectionMatrix: cameraRenderParams.projectionMatrix,
+			intrinsics: camera.meta.intrinsics,
+			shDegree: 3,
+			backgroundColor: simd_float3(0, 0, 0),
+			format: .rgba
+		)
+		
+		// Convert tensor to RGBImage
+		let h = splatRenderTensor.size(0)
+		let w = splatRenderTensor.size(1)
+		let ch = splatRenderTensor.size(2)
+		let format: RGBImage.ImageFormat = (ch == 4) ? .rgba : .rgb
+		
+		// Copy tensor data to array
+		let pixels = splatRenderTensor.toFloatArray()
+		return try RGBImage(data: pixels, width: w, height: h, format: format)
+	}
+	
 	nonisolated private func performTraining(inputData:SplatInputData, totalIterations: Int) async throws
 	{
 		let inputData = inputData.autoScaleAndCenter()
@@ -265,76 +310,22 @@ final class Engine
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
 				
-				let trainerRender = try await trainer.render(cameraIndex: renderCameraIndex % inputData.numCameras, format: .rgba)
 				renderCameraIndex += 1
+				let cameraIndex = renderCameraIndex % inputData.numCameras
+
+				// Render using trainer's internal pipeline
+				let trainerRender = try await trainer.render(cameraIndex: cameraIndex, format: .rgba)
 				
+				// Get splats and render using standalone pipeline (for comparison/validation)
 				let splats = try trainer.GetSplats()
-				
-				// Get camera for rendering
-				let splatRenderCamera = inputData.cameras[renderCameraIndex % inputData.numCameras]
-				let splatImageWidth = trainerRender.width
-				let splatImageHeight = trainerRender.height
-				
-				// Extract camera parameters
-				let fx = splatRenderCamera.meta.fx
-				let fy = splatRenderCamera.meta.fy
-				let cx = splatRenderCamera.meta.cx
-				let cy = splatRenderCamera.meta.cy
-				
-				// Convert camToWorld from [Float] to simd_float4x4
-				let camToWorldArray = splatRenderCamera.meta.camToWorld
-				let camToWorld = simd_float4x4(
-					simd_float4(camToWorldArray[0], camToWorldArray[1], camToWorldArray[2], camToWorldArray[3]),
-					simd_float4(camToWorldArray[4], camToWorldArray[5], camToWorldArray[6], camToWorldArray[7]),
-					simd_float4(camToWorldArray[8], camToWorldArray[9], camToWorldArray[10], camToWorldArray[11]),
-					simd_float4(camToWorldArray[12], camToWorldArray[13], camToWorldArray[14], camToWorldArray[15])
+				let splatRender = try await renderFromSplats(
+					splats,
+					camera: inputData.cameras[cameraIndex],
+					targetWidth: trainerRender.width,
+					targetHeight: trainerRender.height
 				)
 				
-				// Build projection matrix
-				let projMat = buildProjectionMatrix(
-					fx: fx,
-					fy: fy,
-					cx: cx,
-					cy: cy,
-					width: Float(splatImageWidth),
-					height: Float(splatImageHeight),
-					near: 0.01,
-					far: 1000.0
-				)
-				
-				// Render from the splats without trainer buffers
-				let splatRenderTensor = try await msplatRenderSplats(
-					splats: splats,
-					device: metalContext.device,
-					queue: metalContext.queue,
-					pipelineStates: RenderPipelineStates(ctx: metalContext),
-					camToWorld: camToWorld,
-					projectionMatrix: projMat,
-					intrinsics: CameraIntrinsics(
-						fx: fx,
-						fy: fy,
-						cx: cx,
-						cy: cy,
-						width: splatImageWidth,
-						height: splatImageHeight
-					),
-					shDegree: 3,
-					backgroundColor: simd_float3(0, 0, 0),
-					format: .rgba
-				)
-				func ImageTensorToImage(imageTensor:MTensor) throws -> RGBImage
-				{
-					print("ImageTensor shape: \(imageTensor.shape)")
-					let h = imageTensor.size(0)
-					let w = imageTensor.size(1)
-					let ch = imageTensor.size(2)
-					let format: RGBImage.ImageFormat = (ch == 4) ? .rgba : .rgb
-					let pixels = Array(UnsafeBufferPointer(start: imageTensor.floats(), count: h * w * ch))
-					return try RGBImage(data: pixels, width: w, height: h, format: format)
-				}
-				let splatRender = try ImageTensorToImage(imageTensor: splatRenderTensor)
-				
-				//	this can be done on another thread
+				//	Convert to CGImages for display
 				do
 				{
 					let trainercgImage = try trainerRender.makeCGImage(useFloatComponents: true)

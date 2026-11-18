@@ -256,7 +256,7 @@ public final class SplatTrainer {
         
         let h = rgb.size(0)
 		let w = rgb.size(1)
-		let pixels = Array(UnsafeBufferPointer(start: rgb.floats(), count: h * w * format.channels))
+		let pixels = rgb.toFloatArray()
         return try RGBImage(data: pixels, width: w, height: h, format: format)
     }
 
@@ -276,9 +276,8 @@ public final class SplatTrainer {
 	}
 
     /// Camera at `refCameraIndex` with its pose replaced (intrinsics kept).
-    private func GetNewRuntimeCamera(_ camToWorld: [Float], _ refCameraIndex: Int) throws -> RuntimeCamera
+    private func GetNewRuntimeCamera(_ camToWorld: simd_float4x4, _ refCameraIndex: Int) throws -> RuntimeCamera
 	{
-        precondition(camToWorld.count == 16, "camToWorld must have 16 elements")
         guard dataset.cameras.indices.contains(refCameraIndex) else 
 		{
 			throw MsplatError("No such camera \(refCameraIndex)/\(dataset.cameras.count)")
@@ -299,9 +298,9 @@ public final class SplatTrainer {
         return cam
     }
 
-    /// Render from an arbitrary camera-to-world pose (4x4 row-major, OpenGL convention),
+    /// Render from an arbitrary camera-to-world pose (OpenGL convention),
     /// using the intrinsics of a reference training camera.
-    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0, format: RGBImage.ImageFormat) async throws -> RGBImage? 
+    public func renderFromPose(camToWorld: simd_float4x4, refCameraIndex: Int = 0, format: RGBImage.ImageFormat) async throws -> RGBImage? 
 	{
         let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex)
 		return try await renderToImage(cam, format: format)
@@ -310,7 +309,7 @@ public final class SplatTrainer {
     /// Render from pose straight into a caller-provided RGBA8 buffer (≥ w*h*4 bytes).
     /// Pass nil to just query the output size. Returns (0, 0) for a bad camera index.
     @discardableResult
-    public func renderFromPose(camToWorld: [Float], refCameraIndex: Int = 0,
+    public func renderFromPose(camToWorld: simd_float4x4, refCameraIndex: Int = 0,
                                into rgba: UnsafeMutablePointer<UInt8>?) async throws -> (width: Int, height: Int)
 	{
         let cam = try GetNewRuntimeCamera(camToWorld, refCameraIndex)

@@ -2,7 +2,27 @@ import Foundation
 import ColmapData
 import NerfStudioData
 import PolycamData
+import simd
 
+
+/// Convert a 16-element Float array (row-major) to simd_float4x4 (column-major).
+/// This handles the conversion from the typical row-major format used in JSON files
+/// to the column-major format used by SIMD types.
+private func arrayToMatrix4x4(_ array: [Float]) -> simd_float4x4 {
+	guard array.count == 16 else {
+		// Return identity matrix if array is invalid
+		return matrix_identity_float4x4
+	}
+	
+	// Array is in row-major order: [m00, m01, m02, m03, m10, m11, m12, m13, ...]
+	// simd_float4x4 expects column-major, so we need to transpose
+	return simd_float4x4(
+		simd_float4(array[0], array[4], array[8],  array[12]),  // column 0
+		simd_float4(array[1], array[5], array[9],  array[13]),  // column 1
+		simd_float4(array[2], array[6], array[10], array[14]),  // column 2
+		simd_float4(array[3], array[7], array[11], array[15])   // column 3
+	)
+}
 
 
 func fileExists(_ path: String) -> Bool { FileManager.default.fileExists(atPath: path) }
@@ -75,22 +95,22 @@ extension NerfstudioDatasetSource : SplatDatasetSource
 				nerfDataset.baseDirectory.appendingPathComponent(nerfCamera.imagePath)
 			))
 			
-			cameraMeta.width = nerfCamera.width
-			cameraMeta.height = nerfCamera.height
-			cameraMeta.fx = nerfCamera.fx
-			cameraMeta.fy = nerfCamera.fy
-			cameraMeta.cx = nerfCamera.cx
-			cameraMeta.cy = nerfCamera.cy
+			cameraMeta.intrinsics.width = nerfCamera.width
+			cameraMeta.intrinsics.height = nerfCamera.height
+			cameraMeta.intrinsics.fx = nerfCamera.fx
+			cameraMeta.intrinsics.fy = nerfCamera.fy
+			cameraMeta.intrinsics.cx = nerfCamera.cx
+			cameraMeta.intrinsics.cy = nerfCamera.cy
 			
 			// Map distortion parameters (NerfStudio uses k1-k4, p1-p2; we use k1-k3, p1-p2)
-			cameraMeta.k1 = nerfCamera.k1
-			cameraMeta.k2 = nerfCamera.k2
-			cameraMeta.k3 = nerfCamera.k3  // k4 is ignored - not supported by our distortion model
-			cameraMeta.p1 = nerfCamera.p1
-			cameraMeta.p2 = nerfCamera.p2
+			cameraMeta.distortion.k1 = nerfCamera.k1
+			cameraMeta.distortion.k2 = nerfCamera.k2
+			cameraMeta.distortion.k3 = nerfCamera.k3  // k4 is ignored - not supported by our distortion model
+			cameraMeta.distortion.p1 = nerfCamera.p1
+			cameraMeta.distortion.p2 = nerfCamera.p2
 			
-			// Copy transform matrix (already in OpenGL convention)
-			cameraMeta.camToWorld = nerfCamera.transformMatrix
+			// Convert transform matrix from [Float] array to simd_float4x4 (column-major)
+			cameraMeta.camToWorld = arrayToMatrix4x4(nerfCamera.transformMatrix)
 			
 			inputData.cameras.append(cameraMeta)
 		}
@@ -150,22 +170,22 @@ extension ColmapDatasetSource: SplatDatasetSource
 		{
 			var cameraMeta = CameraMeta(imageSource: .url(colmapCamera.imagePath))
 			
-			cameraMeta.width = colmapCamera.width
-			cameraMeta.height = colmapCamera.height
-			cameraMeta.fx = colmapCamera.fx
-			cameraMeta.fy = colmapCamera.fy
-			cameraMeta.cx = colmapCamera.cx
-			cameraMeta.cy = colmapCamera.cy
+			cameraMeta.intrinsics.width = colmapCamera.width
+			cameraMeta.intrinsics.height = colmapCamera.height
+			cameraMeta.intrinsics.fx = colmapCamera.fx
+			cameraMeta.intrinsics.fy = colmapCamera.fy
+			cameraMeta.intrinsics.cx = colmapCamera.cx
+			cameraMeta.intrinsics.cy = colmapCamera.cy
 			
 			// Map distortion parameters
-			cameraMeta.k1 = colmapCamera.k1
-			cameraMeta.k2 = colmapCamera.k2
-			cameraMeta.k3 = colmapCamera.k3
-			cameraMeta.p1 = colmapCamera.p1
-			cameraMeta.p2 = colmapCamera.p2
+			cameraMeta.distortion.k1 = colmapCamera.k1
+			cameraMeta.distortion.k2 = colmapCamera.k2
+			cameraMeta.distortion.k3 = colmapCamera.k3
+			cameraMeta.distortion.p1 = colmapCamera.p1
+			cameraMeta.distortion.p2 = colmapCamera.p2
 			
-			// Copy transform matrix (already in OpenGL convention)
-			cameraMeta.camToWorld = colmapCamera.transformMatrix
+			// Convert transform matrix from [Float] array to simd_float4x4 (column-major)
+			cameraMeta.camToWorld = simd_float4x4(colMajor: colmapCamera.transformMatrix)
 			
 			inputData.cameras.append(cameraMeta)
 		}
@@ -226,22 +246,22 @@ extension PolycamDatasetSource: SplatDatasetSource
 				polycamDataset.baseDirectory.appendingPathComponent(polycamCamera.imagePath)
 			))
 			
-			cameraMeta.width = polycamCamera.width
-			cameraMeta.height = polycamCamera.height
-			cameraMeta.fx = polycamCamera.fx
-			cameraMeta.fy = polycamCamera.fy
-			cameraMeta.cx = polycamCamera.cx
-			cameraMeta.cy = polycamCamera.cy
+			cameraMeta.intrinsics.width = polycamCamera.width
+			cameraMeta.intrinsics.height = polycamCamera.height
+			cameraMeta.intrinsics.fx = polycamCamera.fx
+			cameraMeta.intrinsics.fy = polycamCamera.fy
+			cameraMeta.intrinsics.cx = polycamCamera.cx
+			cameraMeta.intrinsics.cy = polycamCamera.cy
 			
 			// Map distortion parameters (Polycam uses k1, k2, p1, p2)
-			cameraMeta.k1 = polycamCamera.k1
-			cameraMeta.k2 = polycamCamera.k2
-			cameraMeta.k3 = 0  // Not provided by Polycam
-			cameraMeta.p1 = polycamCamera.p1
-			cameraMeta.p2 = polycamCamera.p2
+			cameraMeta.distortion.k1 = polycamCamera.k1
+			cameraMeta.distortion.k2 = polycamCamera.k2
+			cameraMeta.distortion.k3 = 0  // Not provided by Polycam
+			cameraMeta.distortion.p1 = polycamCamera.p1
+			cameraMeta.distortion.p2 = polycamCamera.p2
 			
-			// Copy transform matrix (already in OpenGL convention)
-			cameraMeta.camToWorld = polycamCamera.transformMatrix
+			// Convert transform matrix from [Float] array to simd_float4x4 (column-major)
+			cameraMeta.camToWorld = arrayToMatrix4x4(polycamCamera.transformMatrix)
 			
 			inputData.cameras.append(cameraMeta)
 		}
@@ -267,12 +287,12 @@ extension PolycamIntrinsics
 		var meta = CameraMeta(imageSource: imageSource)
 		let w = width ?? 0
 		let h = height ?? 0
-		meta.width = w
-		meta.height = h
-		meta.fx = Float(fx ?? 0)
-		meta.fy = Float(fy ?? 0)
-		meta.cx = Float(cx ?? Double(w) / 2.0)
-		meta.cy = Float(cy ?? Double(h) / 2.0)
+		meta.intrinsics.width = w
+		meta.intrinsics.height = h
+		meta.intrinsics.fx = Float(fx ?? 0)
+		meta.intrinsics.fy = Float(fy ?? 0)
+		meta.intrinsics.cx = Float(cx ?? Double(w) / 2.0)
+		meta.intrinsics.cy = Float(cy ?? Double(h) / 2.0)
 		return meta
 	}
 }

@@ -73,6 +73,16 @@ public struct CameraIntrinsics {
     public var imgWidth: UInt32 { UInt32(width) }
     public var imgHeight: UInt32 { UInt32(height) }
     
+    /// Horizontal field of view in radians
+    public var fovX: Float {
+        2.0 * atanf(Float(width) / (2.0 * fx))
+    }
+    
+    /// Vertical field of view in radians
+    public var fovY: Float {
+        2.0 * atanf(Float(height) / (2.0 * fy))
+    }
+    
     public init(fx: Float, fy: Float, cx: Float, cy: Float, width: Int, height: Int) {
         self.fx = fx
         self.fy = fy
@@ -80,6 +90,19 @@ public struct CameraIntrinsics {
         self.cy = cy
         self.width = width
         self.height = height
+    }
+    
+    /// Scale intrinsics by a factor (e.g., for downsampling)
+    public func scaled(by factor: Float) -> CameraIntrinsics {
+        let invFactor = 1.0 / factor
+        return CameraIntrinsics(
+            fx: fx * invFactor,
+            fy: fy * invFactor,
+            cx: cx * invFactor,
+            cy: cy * invFactor,
+            width: Int(Float(width) * invFactor),
+            height: Int(Float(height) * invFactor)
+        )
     }
 }
 
@@ -480,12 +503,13 @@ public struct RenderBuffers {
 /// Buffers can be pre-allocated and reused across multiple render calls.
 /// Works with any Metal device and command queue - no MetalContext required.
 public func msplatRenderWithBuffers(
-    _ p: RenderParams,
+    renderParams: RenderParams,
     _ buffers: RenderBuffers,
     queue: MTLCommandQueue,
     pipelineStates: RenderPipelineStates
-) async throws -> MTensor {
-    let k = Consts(p)
+) async throws -> MTensor 
+{
+    let k = Consts(renderParams)
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     
     // Validate that chunked buffers exist if needed
@@ -539,11 +563,11 @@ public func msplatRenderWithBuffers(
         blit.endEncoding()
 
         let enc = cb.makeComputeCommandEncoder()!
-        encodeProjSh(enc, pipelineStates, p, k, cache)
+        encodeProjSh(enc, pipelineStates, renderParams, k, cache)
         enc.barrier()
-        encodePrefixMap(enc, pipelineStates, p, k, cache)
+        encodePrefixMap(enc, pipelineStates, renderParams, k, cache)
         enc.barrier()
-        encodeRastFwd(enc, pipelineStates, p, k, kMax: kMax, cache)
+        encodeRastFwd(enc, pipelineStates, renderParams, k, kMax: kMax, cache)
         enc.endEncoding()
     }
 
@@ -580,7 +604,8 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
     }
 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
-    if kMax > 1 {
+    if kMax > 1
+	{
         try ctx.tensorCache.ensureChunkedRenderingBuffers(k: Int(kMax), ih: p.intrinsics.height, iw: p.intrinsics.width, ch: Int(p.channels), ctx: ctx)
     }
 
@@ -618,7 +643,7 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
     let pso = RenderPipelineStates(ctx: ctx)
 
     // Delegate to the refined render function
-    return try await msplatRenderWithBuffers(p, buffers, queue: ctx.queue, pipelineStates: pso)
+	return try await msplatRenderWithBuffers(renderParams:p, buffers, queue: ctx.queue, pipelineStates: pso)
 }
 
 /// Convenience function to render splat points directly with camera parameters.
@@ -667,10 +692,10 @@ public func msplatRenderSplats(
         scalesPtr[i * 3 + 1] = s.scaleLog.y
         scalesPtr[i * 3 + 2] = s.scaleLog.z
         // Quaternion (w, x, y, z)
-        quatsPtr[i * 4 + 0] = s.quaternionWxyz.x  // w
-        quatsPtr[i * 4 + 1] = s.quaternionWxyz.y  // x
-        quatsPtr[i * 4 + 2] = s.quaternionWxyz.z  // y
-        quatsPtr[i * 4 + 3] = s.quaternionWxyz.w  // z
+        quatsPtr[i * 4 + 0] = s.quaternionWxyz[0]  // w
+        quatsPtr[i * 4 + 1] = s.quaternionWxyz[1] // x
+        quatsPtr[i * 4 + 2] = s.quaternionWxyz[2]  // y
+        quatsPtr[i * 4 + 3] = s.quaternionWxyz[3]  // z
         // SH DC term
         featuresDcPtr[i * 3 + 0] = s.shDc.x
         featuresDcPtr[i * 3 + 1] = s.shDc.y
@@ -689,6 +714,12 @@ public func msplatRenderSplats(
     // Note: Can't create tensor with 0 dimension, so create minimal [numSplats, 1, 3] but won't be used
     let featuresRest = try MTensor(device: device, shape: [numSplats, 1, 3], dtype: .float32)
     
+	
+	
+	
+	//	this shuld be PrepareCam
+	
+	
     // Calculate camera position from camToWorld matrix
     let camPos = simd_float3(camToWorld.columns.3.x, camToWorld.columns.3.y, camToWorld.columns.3.z)
     
@@ -698,6 +729,16 @@ public func msplatRenderSplats(
     let tilesX = (intrinsics.width + tileSizeX - 1) / tileSizeX
     let tilesY = (intrinsics.height + tileSizeY - 1) / tileSizeY
     
+    // Compute view matrix and combined projection-view matrix (matching Model.renderParams)
+    let viewMatrix = camToWorld.inverse  // world-to-cam
+    let projViewMatrix = projectionMatrix * viewMatrix  // Combined matrix like Model does
+    
+	
+	
+	
+	
+	
+	
     // Create render parameters
     let renderParams = RenderParams(
         numPoints: numSplats,
@@ -705,8 +746,8 @@ public func msplatRenderSplats(
         scales: scales,
         globScale: 1.0,
         quats: quats,
-        viewmat: camToWorld.inverse,  // world-to-cam
-        projmat: projectionMatrix,
+        viewmat: viewMatrix,
+        projmat: projViewMatrix,  // Combined projection×view matrix!
         intrinsics: intrinsics,
         tileBounds: (tilesX, tilesY, 1),
         clipThresh: 0.01,
@@ -738,7 +779,7 @@ public func msplatRenderSplats(
     
     // Render!
     return try await msplatRenderWithBuffers(
-        renderParams,
+		renderParams:renderParams,
         buffers,
         queue: queue,
         pipelineStates: pipelineStates

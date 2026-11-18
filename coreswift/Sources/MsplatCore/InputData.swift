@@ -4,6 +4,7 @@
 import Foundation
 import Metal
 import simd
+import SwiftUI
 
 /// Image source for camera metadata
 public enum ImageSource 
@@ -21,35 +22,75 @@ public enum ImageSource
 	}
 }
 
+/// Lens distortion parameters (Brown-Conrady model)
+public struct DistortionParams {
+    public var k1: Float = 0  // radial distortion coefficient 1
+    public var k2: Float = 0  // radial distortion coefficient 2
+    public var k3: Float = 0  // radial distortion coefficient 3
+    public var p1: Float = 0  // tangential distortion coefficient 1
+    public var p2: Float = 0  // tangential distortion coefficient 2
+    
+    public init(k1: Float = 0, k2: Float = 0, k3: Float = 0, p1: Float = 0, p2: Float = 0) {
+        self.k1 = k1
+        self.k2 = k2
+        self.k3 = k3
+        self.p1 = p1
+        self.p2 = p2
+    }
+    
+    /// Check if any distortion parameters are non-zero
+    public var hasDistortion: Bool {
+        k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0
+    }
+}
+
 /// Camera metadata: fixed data loaded from dataset (intrinsics, pose, dimensions).
 /// Value type for camera parameters.
 public struct CameraMeta 
 {
-    public var width = 0, height = 0
-	public var fx: Float = 0, fy: Float = 0, cx: Float = 0, cy: Float = 0
-	public var k1: Float = 0, k2: Float = 0, k3: Float = 0, p1: Float = 0, p2: Float = 0
-    /// 4x4 row-major camera-to-world (OpenGL: Y-up, Z-back).
-	public var camToWorld = [Float](repeating: 0, count: 16)
+    public var intrinsics: CameraIntrinsics
+    public var distortion: DistortionParams
+    /// 4x4 camera-to-world transform (OpenGL: Y-up, Z-back).
+	public var camToWorld: simd_float4x4 = matrix_identity_float4x4
 	public var imageSource: ImageSource
     
     public init(imageSource: ImageSource) {
         self.imageSource = imageSource
+        self.intrinsics = CameraIntrinsics(fx: 0, fy: 0, cx: 0, cy: 0, width: 0, height: 0)
+        self.distortion = DistortionParams()
     }
-
-    var hasDistortion: Bool { k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0 }
+    
+    public init(imageSource: ImageSource, intrinsics: CameraIntrinsics, distortion: DistortionParams = DistortionParams()) {
+        self.imageSource = imageSource
+        self.intrinsics = intrinsics
+        self.distortion = distortion
+    }
+    
+    // Convenience accessors for width/height only
+    public var width: Int {
+        get { intrinsics.width }
+        set { intrinsics.width = newValue }
+    }
+    
+    public var height: Int {
+        get { intrinsics.height }
+        set { intrinsics.height = newValue }
+    }
 }
 
 /// Cached camera transforms and projection data computed during rendering
-struct CameraRenderParams {
-    var viewMat = MTensor()
-    var projViewMat = MTensor()
-	var camPos: simd_float3 = .zero
-    var fovX: Float = 0
-    var fovY: Float = 0
+public struct CameraRenderParams 
+{
+    public var viewMat = MTensor()		//	world to camera
+	public var projectionMatrix = simd_float4x4()
+	public var projViewMat = MTensor()
+	public var camPos: simd_float3 = .zero
+	public var fovX: Float = 0
+	public var fovY: Float = 0
     
-    var isDefined: Bool { viewMat.defined && projViewMat.defined }
+	public var isDefined: Bool { viewMat.defined && projViewMat.defined }
     
-    mutating func clear() {
+	public mutating func clear() {
         viewMat.reset()
         projViewMat.reset()
         camPos = .zero
@@ -57,7 +98,7 @@ struct CameraRenderParams {
         fovY = 0
     }
     
-    var gpuMemoryUsage: Int {
+	public var gpuMemoryUsage: Int {
         viewMat.nbytes + projViewMat.nbytes
     }
 }
@@ -97,10 +138,10 @@ public final class RuntimeCamera
         if processedMeta.width > 0 && processedMeta.height > 0 && (raw.width != processedMeta.width || raw.height != processedMeta.height) {
             let sx = Float(raw.width) / Float(processedMeta.width)
             let sy = Float(raw.height) / Float(processedMeta.height)
-            processedMeta.fx *= sx
-            processedMeta.fy *= sy
-            processedMeta.cx *= sx
-            processedMeta.cy *= sy
+            processedMeta.intrinsics.fx *= sx
+            processedMeta.intrinsics.fy *= sy
+            processedMeta.intrinsics.cx *= sx
+            processedMeta.intrinsics.cy *= sy
             processedMeta.width = raw.width
             processedMeta.height = raw.height
         } else if processedMeta.width == 0 || processedMeta.height == 0 {
@@ -114,33 +155,33 @@ public final class RuntimeCamera
             let newH = Int(Float(processedMeta.height) / downscaleFactor)
             raw = resizeArea(raw, newW, newH)
             let s = 1.0 / downscaleFactor
-            processedMeta.fx *= s
-            processedMeta.fy *= s
-            processedMeta.cx *= s
-            processedMeta.cy *= s
+            processedMeta.intrinsics.fx *= s
+            processedMeta.intrinsics.fy *= s
+            processedMeta.intrinsics.cx *= s
+            processedMeta.intrinsics.cy *= s
             processedMeta.width = newW
             processedMeta.height = newH
         }
 
         // Undistort if needed
-        if processedMeta.hasDistortion {
-            let r = undistortImage(raw, fx: processedMeta.fx, fy: processedMeta.fy, 
-                                   cx: processedMeta.cx, cy: processedMeta.cy,
-                                   k1: processedMeta.k1, k2: processedMeta.k2, 
-                                   p1: processedMeta.p1, p2: processedMeta.p2, 
-                                   k3: processedMeta.k3)
+        if processedMeta.distortion.hasDistortion {
+            let r = undistortImage(raw, fx: processedMeta.intrinsics.fx, fy: processedMeta.intrinsics.fy, 
+                                   cx: processedMeta.intrinsics.cx, cy: processedMeta.intrinsics.cy,
+                                   k1: processedMeta.distortion.k1, k2: processedMeta.distortion.k2, 
+                                   p1: processedMeta.distortion.p1, p2: processedMeta.distortion.p2, 
+                                   k3: processedMeta.distortion.k3)
             raw = r.image
-            processedMeta.fx = r.fx
-            processedMeta.fy = r.fy
-            processedMeta.cx = r.cx
-            processedMeta.cy = r.cy
+            processedMeta.intrinsics.fx = r.fx
+            processedMeta.intrinsics.fy = r.fy
+            processedMeta.intrinsics.cx = r.cx
+            processedMeta.intrinsics.cy = r.cy
             processedMeta.width = r.width
             processedMeta.height = r.height
-            processedMeta.k1 = 0
-            processedMeta.k2 = 0
-            processedMeta.k3 = 0
-            processedMeta.p1 = 0
-            processedMeta.p2 = 0
+            processedMeta.distortion.k1 = 0
+            processedMeta.distortion.k2 = 0
+            processedMeta.distortion.k3 = 0
+            processedMeta.distortion.p1 = 0
+            processedMeta.distortion.p2 = 0
         }
         
         self.meta = processedMeta
@@ -325,9 +366,14 @@ public final class SplatInputData {
         // Calculate mean camera position
         var mean: (Float, Float, Float) = (0, 0, 0)
         for cam in cameras {
-            mean.0 += cam.meta.camToWorld[3]
-            mean.1 += cam.meta.camToWorld[7]
-            mean.2 += cam.meta.camToWorld[11]
+			/* prev
+			 mean.0 += cam.meta.camToWorld[3]
+			 mean.1 += cam.meta.camToWorld[7]
+			 mean.2 += cam.meta.camToWorld[11]
+			 */
+            mean.0 += cam.meta.camToWorld.columns.3.x
+            mean.1 += cam.meta.camToWorld.columns.3.y
+            mean.2 += cam.meta.camToWorld.columns.3.z
         }
         let n = Float(cameras.count)
         mean.0 /= n; mean.1 /= n; mean.2 /= n
@@ -336,9 +382,14 @@ public final class SplatInputData {
         var translatedCameras: [RuntimeCamera] = []
         for cam in cameras {
             var newMeta = cam.meta
-            newMeta.camToWorld[3] -= mean.0
-            newMeta.camToWorld[7] -= mean.1
-            newMeta.camToWorld[11] -= mean.2
+			/*
+			 newMeta.camToWorld[3] -= mean.0
+			 newMeta.camToWorld[7] -= mean.1
+			 newMeta.camToWorld[11] -= mean.2
+			 */
+            newMeta.camToWorld.columns.3.x -= mean.0
+            newMeta.camToWorld.columns.3.y -= mean.1
+            newMeta.camToWorld.columns.3.z -= mean.2
             
             let newCam = RuntimeCamera(meta: newMeta, image: cam.image, copyingCachesFrom: cam)
             translatedCameras.append(newCam)
@@ -347,9 +398,9 @@ public final class SplatInputData {
         // Find maximum absolute coordinate
         var maxAbs: Float = 0
         for cam in translatedCameras {
-            maxAbs = max(maxAbs, abs(cam.meta.camToWorld[3]))
-            maxAbs = max(maxAbs, abs(cam.meta.camToWorld[7]))
-            maxAbs = max(maxAbs, abs(cam.meta.camToWorld[11]))
+            maxAbs = max(maxAbs, abs(cam.meta.camToWorld.columns.3.x))
+            maxAbs = max(maxAbs, abs(cam.meta.camToWorld.columns.3.y))
+            maxAbs = max(maxAbs, abs(cam.meta.camToWorld.columns.3.z))
         }
         let scale = maxAbs > 0 ? 1.0 / maxAbs : 1.0
         
@@ -357,9 +408,9 @@ public final class SplatInputData {
         var scaledCameras: [RuntimeCamera] = []
         for cam in translatedCameras {
             var newMeta = cam.meta
-            newMeta.camToWorld[3] *= scale
-            newMeta.camToWorld[7] *= scale
-            newMeta.camToWorld[11] *= scale
+            newMeta.camToWorld.columns.3.x *= scale
+            newMeta.camToWorld.columns.3.y *= scale
+            newMeta.camToWorld.columns.3.z *= scale
             
             let newCam = RuntimeCamera(meta: newMeta, image: cam.image, copyingCachesFrom: cam)
             scaledCameras.append(newCam)
@@ -443,32 +494,32 @@ func autoScaleAndCenter(_ data: InputData) {
 
     var mean: (Float, Float, Float) = (0, 0, 0)
     for cam in data.cameras {
-        mean.0 += cam.camToWorld[3]
-        mean.1 += cam.camToWorld[7]
-        mean.2 += cam.camToWorld[11]
+        mean.0 += cam.camToWorld.columns.3.x
+        mean.1 += cam.camToWorld.columns.3.y
+        mean.2 += cam.camToWorld.columns.3.z
     }
     let n = Float(data.cameras.count)
     mean.0 /= n; mean.1 /= n; mean.2 /= n
     data.translation = mean
 
     for i in 0..<data.cameras.count {
-        data.cameras[i].camToWorld[3] -= mean.0
-        data.cameras[i].camToWorld[7] -= mean.1
-        data.cameras[i].camToWorld[11] -= mean.2
+        data.cameras[i].camToWorld.columns.3.x -= mean.0
+        data.cameras[i].camToWorld.columns.3.y -= mean.1
+        data.cameras[i].camToWorld.columns.3.z -= mean.2
     }
 
     var maxAbs: Float = 0
     for cam in data.cameras {
-        maxAbs = max(maxAbs, abs(cam.camToWorld[3]))
-        maxAbs = max(maxAbs, abs(cam.camToWorld[7]))
-        maxAbs = max(maxAbs, abs(cam.camToWorld[11]))
+        maxAbs = max(maxAbs, abs(cam.camToWorld.columns.3.x))
+        maxAbs = max(maxAbs, abs(cam.camToWorld.columns.3.y))
+        maxAbs = max(maxAbs, abs(cam.camToWorld.columns.3.z))
     }
     data.scale = maxAbs > 0 ? 1.0 / maxAbs : 1.0
 
     for i in 0..<data.cameras.count {
-        data.cameras[i].camToWorld[3] *= data.scale
-        data.cameras[i].camToWorld[7] *= data.scale
-        data.cameras[i].camToWorld[11] *= data.scale
+        data.cameras[i].camToWorld.columns.3.x *= data.scale
+        data.cameras[i].camToWorld.columns.3.y *= data.scale
+        data.cameras[i].camToWorld.columns.3.z *= data.scale
     }
 
     let s = data.scale

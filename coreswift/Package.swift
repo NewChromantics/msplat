@@ -14,7 +14,7 @@ let package = Package(
 			.package(name: "NerfStudioData", path: "../NerfStudioData.SwiftPackage"),
 			.package(name: "ColmapData", path: "../ColmapData.SwiftPackage"),
 			.package(name: "PolycamData", path: "../PolycamData.SwiftPackage"),
-			.package(url: "https://github.com/NewChromantics/CoreGraphicsExtensions.SwiftPackage", branch:"main"),
+			.package(url: "https://github.com/NewChromantics/CoreGraphicsExtensions.SwiftPackage", revision: "0.0.6"),
 			.package(url: "https://github.com/NewChromantics/PopCommon.SwiftPackage", branch:"main")
 		]
 	,
