@@ -742,21 +742,63 @@ final class Model
 			throw MsplatError("Expecting 3 sh0")
 		}
 		
-		let positions = means.float3s()
-		let scales = scales.float3s()
-		let quats = quats.float4s()
-		let opacitys = opacities.floats()
-		let featureDcs = featuresDc.float3s()
-		let featureRests = featuresRest.floats()
+		// Read from GPU tensors (don't shadow property names!)
+		let positions = self.means.float3s()
+		let scalesData = self.scales.float3s()
+		let quatsData = self.quats.float4s()
+		let opacitysData = self.opacities.floats()
+		let featureDcsData = self.featuresDc.float3s()
+		
+		// Validation: Check for NaN/Inf values
+		func validateSplatData() throws {
+			var nanCount = 0
+			var nanSources: [String: Int] = [:]
+			
+			for i in 0..<min(100, numPoints) {  // Check first 100 for speed
+				let pos = positions[i]
+				let scale = scalesData[i]
+				let quat = quatsData[i]
+				let opacity = opacitysData[i]
+				let featureDc = featureDcsData[i]
+				
+				if pos.x.isNaN || pos.y.isNaN || pos.z.isNaN {
+					nanSources["position", default: 0] += 1
+					nanCount += 1
+				}
+				if scale.x.isNaN || scale.y.isNaN || scale.z.isNaN {
+					nanSources["scale", default: 0] += 1
+					nanCount += 1
+				}
+				if quat.x.isNaN || quat.y.isNaN || quat.z.isNaN || quat.w.isNaN {
+					nanSources["quaternion", default: 0] += 1
+					nanCount += 1
+				}
+				if opacity.isNaN {
+					nanSources["opacity", default: 0] += 1
+					nanCount += 1
+				}
+				if featureDc.x.isNaN || featureDc.y.isNaN || featureDc.z.isNaN {
+					nanSources["featureDc", default: 0] += 1
+					nanCount += 1
+				}
+			}
+			
+			if nanCount > 0 {
+				let report = nanSources.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
+				throw MsplatError("GetSplats: Found \(nanCount) NaN values in first 100 splats: \(report)")
+			}
+		}
+		
+		//try validateSplatData()
 		
 		let points = (0..<numPoints).map
 		{
 			i in
 			let pos = positions[i]
-			let scale = scales[i]
-			let quat = quats[i]
-			let opacity = opacitys[i]
-			let featureDc = featureDcs[i]
+			let scale = scalesData[i]
+			let quat = quatsData[i]
+			let opacity = opacitysData[i]
+			let featureDc = featureDcsData[i]
 			let splat = PlySplatPoint(position: pos, quaternionWxyz: quat, scaleLog: scale, opacityLogit: opacity, shDc: featureDc)
 			return splat
 		}

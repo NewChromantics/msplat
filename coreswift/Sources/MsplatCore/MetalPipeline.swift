@@ -545,7 +545,8 @@ public func msplatRenderWithBuffers(
     cache.lossSum = buffers.lossSum
     cache.overflowFlag = buffers.overflowFlag
     
-    if let chunkT = buffers.chunkT {
+    if let chunkT = buffers.chunkT 
+	{
         cache.chunkT = chunkT
         cache.chunkC = buffers.chunkC!
         cache.chunkFinalIdx = buffers.chunkFinalIdx!
@@ -557,11 +558,14 @@ public func msplatRenderWithBuffers(
     try await queue.executeGpuWork(jobName: "Render")
     {
         cb in
+		
         // Zero accumulating buffers on the GPU
         let blit = cb.makeBlitCommandEncoder()!
         blit.zero(cache.lossSum)
         blit.zero(cache.overflowFlag)
         blit.zero(cache.tileScatterCounters)
+        blit.zero(cache.numTilesHit)
+        blit.zero(cache.radiiOut)
         blit.endEncoding()
 
         let enc = cb.makeComputeCommandEncoder()!
@@ -658,7 +662,7 @@ public func msplatRenderSplats(
 	cameraRenderParams:CameraRenderParams,
     intrinsics: CameraIntrinsics,
     shDegree: Int = 3,
-    backgroundColor: simd_float3 = simd_float3(0, 0, 0),
+    backgroundColor: simd_float3,
 	format:RGBImage.ImageFormat
 ) async throws -> MTensor {
     
@@ -740,7 +744,7 @@ public func msplatRenderSplats(
         tileBounds: (tilesX, tilesY, 1),
         clipThresh: 0.01,
         degree: UInt32(shDegree),
-        degreesToUse: 0,  // Only DC term
+        degreesToUse: 3,  // Only DC term
 		camPos: cameraRenderParams.camPos,
         featuresDc: featuresDc,
         featuresRest: featuresRest,
@@ -753,7 +757,8 @@ public func msplatRenderSplats(
     let k = Consts(renderParams)
     let kMax = Int(computeKMax(numTiles: k.numTiles, capacity: k.capacity))
     
-    // Allocate render buffers
+    // Allocate render buffers (these are intermediate computation buffers,
+    // not the input splat data which is already in renderParams)
     let buffers = try RenderBuffers.allocate(
         numPoints: numSplats,
         capacity: k.capacity,
@@ -765,8 +770,6 @@ public func msplatRenderSplats(
         device: device
     )
     
-	//	dont these buffers need to be filled?
-	
     // Render!
     return try await msplatRenderWithBuffers(
 		renderParams:renderParams,

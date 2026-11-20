@@ -242,7 +242,8 @@ final class Engine
 		_ splats: [PlySplatPoint],
 		camera: RuntimeCamera,
 		targetWidth: Int,
-		targetHeight: Int
+		targetHeight: Int,
+		format:RGBImage.ImageFormat
 	) async throws -> RGBImage
 	{
 		let cameraRenderParams = try camera.meta.GetCameraRenderParams(metalContext: metalContext, fovX: camera.meta.intrinsics.fovX, fovY: camera.meta.intrinsics.fovY)
@@ -257,8 +258,8 @@ final class Engine
 			cameraRenderParams: cameraRenderParams,
 			intrinsics: camera.meta.intrinsics,
 			shDegree: 3,
-			backgroundColor: simd_float3(0, 0, 0),
-			format: .rgba
+			backgroundColor: simd_float3(1, 0, 0),
+			format: format
 		)
 		
 		// Convert tensor to RGBImage
@@ -308,20 +309,24 @@ final class Engine
 			{
 				let batchEnd = CACurrentMediaTime()
 				let avgMs = Float((batchEnd - batchStart) / Double(batchSteps) * 1000.0)
-				
-				renderCameraIndex += 1
 				let cameraIndex = renderCameraIndex % inputData.numCameras
+				let renderCamera = inputData.cameras[cameraIndex]
+				renderCameraIndex += 1
 
+				
+				let splats = try trainer.GetSplats()
+				
 				// Render using trainer's internal pipeline
 				let trainerRender = try await trainer.render(cameraIndex: cameraIndex, format: .rgba)
 				
+				
 				// Get splats and render using standalone pipeline (for comparison/validation)
-				let splats = try trainer.GetSplats()
 				let splatRender = try await renderFromSplats(
 					splats,
-					camera: inputData.cameras[cameraIndex],
-					targetWidth: trainerRender.width,
-					targetHeight: trainerRender.height
+					camera: renderCamera,
+					targetWidth: renderCamera.meta.width,
+					targetHeight: renderCamera.meta.height,
+					format: .rgba
 				)
 				
 				//	Convert to CGImages for display
