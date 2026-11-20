@@ -115,10 +115,11 @@ public struct MTensor
 
     public func floats() -> UnsafeMutablePointer<Float> { pointer(Float.self) }
 	public func int32s() -> UnsafeMutablePointer<Int32> { pointer(Int32.self) }
-	public func float2s() -> UnsafeMutablePointer<simd_float2> { pointer(simd_float2.self) }
-	public func float3s() -> UnsafeMutablePointer<simd_float3> { pointer(simd_float3.self) }
-	public func float4s() -> UnsafeMutablePointer<simd_float4> { pointer(simd_float4.self) }
-	public func quat4s() -> UnsafeMutablePointer<simd_quatf> { pointer(simd_quatf.self) }
+	//	these are aligned, so do NOT use via pointer()
+	//public func float2s() -> UnsafeMutablePointer<simd_float2> { pointer(simd_float2.self) }
+	//public func float3s() -> UnsafeMutablePointer<simd_float3> { pointer(simd_float3.self) }
+	//public func float4s() -> UnsafeMutablePointer<simd_float4> { pointer(simd_float4.self) }
+	//public func quat4s() -> UnsafeMutablePointer<simd_quatf> { pointer(simd_quatf.self) }
 	
 	/// Get a buffer pointer with count for safer access
 	public func floatBuffer() -> UnsafeMutableBufferPointer<Float> {

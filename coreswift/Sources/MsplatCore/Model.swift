@@ -156,6 +156,39 @@ func numShBases(_ degree: Int) -> Int {
     }
 }
 
+// MARK: - SIMD Accessors for Float Arrays
+
+extension UnsafeMutablePointer where Pointee == Float {
+    /// Access 3 consecutive floats as simd_float3
+    subscript(float3 index: Int) -> simd_float3 {
+        get {
+            let offset = index * 3
+            return simd_float3(self[offset], self[offset + 1], self[offset + 2])
+        }
+        set {
+            let offset = index * 3
+            self[offset] = newValue.x
+            self[offset + 1] = newValue.y
+            self[offset + 2] = newValue.z
+        }
+    }
+    
+    /// Access 4 consecutive floats as simd_float4
+    subscript(float4 index: Int) -> simd_float4 {
+        get {
+            let offset = index * 4
+            return simd_float4(self[offset], self[offset + 1], self[offset + 2], self[offset + 3])
+        }
+        set {
+            let offset = index * 4
+            self[offset] = newValue.x
+            self[offset + 1] = newValue.y
+            self[offset + 2] = newValue.z
+            self[offset + 3] = newValue.w
+        }
+    }
+}
+
 
 /// Detailed breakdown of GPU memory usage by component
 public struct GPUMemoryBreakdown {
@@ -759,24 +792,26 @@ final class Model
 			throw MsplatError("Expecting 3 sh0")
 		}
 		
-		// Read from GPU tensors (don't shadow property names!)
-		let positions = self.means.float3s()
-		let scalesData = self.scales.float3s()
-		let quatsData = self.quats.float4s()
+		// Read from GPU tensors
+		let positions = self.means.floats()
+		let scalesData = self.scales.floats()
+		let quatsData = self.quats.floats()
 		let opacitysData = self.opacities.floats()
-		let featureDcsData = self.featuresDc.float3s()
+		let featureDcsData = self.featuresDc.floats()
 		
 		// Validation: Check for NaN/Inf values
 		func validateSplatData() throws {
 			var nanCount = 0
 			var nanSources: [String: Int] = [:]
 			
-			for i in 0..<min(100, numPoints) {  // Check first 100 for speed
-				let pos = positions[i]
-				let scale = scalesData[i]
-				let quat = quatsData[i]
+			for i in 0..<min(100, numPoints)
+			{
+				// Check first 100 for speed
+				let pos = positions[float3: i]
+				let scale = scalesData[float3: i]
+				let quat = quatsData[float4: i]
 				let opacity = opacitysData[i]
-				let featureDc = featureDcsData[i]
+				let featureDc = featureDcsData[float3: i]
 				
 				if pos.x.isNaN || pos.y.isNaN || pos.z.isNaN {
 					nanSources["position", default: 0] += 1
@@ -811,11 +846,11 @@ final class Model
 		let points = (0..<numPoints).map
 		{
 			i in
-			let pos = positions[i]
-			let scale = scalesData[i]
-			let quat = quatsData[i]
+			let pos = positions[float3: i]
+			let scale = scalesData[float3: i]
+			let quat = quatsData[float4: i]
 			let opacity = opacitysData[i]
-			let featureDc = featureDcsData[i]
+			let featureDc = featureDcsData[float3: i]
 			let splat = PlySplatPoint(position: pos, quaternionWxyz: quat, scaleLog: scale, opacityLogit: opacity, shDc: featureDc)
 			return splat
 		}

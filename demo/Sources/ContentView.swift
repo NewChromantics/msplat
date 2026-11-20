@@ -263,20 +263,24 @@ struct ContentView: View
 	{
 		HSplitView
 		{
-			if let img = engine.trainerRenderedImage 
+			VStack
 			{
-				Image(nsImage: NSImage(cgImage: img, size: img.size))
-					.resizable()
-					.aspectRatio(contentMode: .fit)
-					.frame(minWidth: 300,maxWidth: 500,maxHeight: .infinity)
+				if let img = engine.trainerRenderedImage 
+				{
+					Image(nsImage: NSImage(cgImage: img, size: img.size))
+						.resizable()
+						.aspectRatio(contentMode: .fit)
+						.frame(minWidth: 300,maxWidth: 500,maxHeight: .infinity)
+				}
+				if let img = engine.trainerRenderedImage2
+				{
+					Image(nsImage: NSImage(cgImage: img, size: img.size))
+						.resizable()
+						.aspectRatio(contentMode: .fit)
+						.frame(minWidth: 300,maxWidth: 500,maxHeight: .infinity)
+				}
 			}
-			if let img = engine.trainerRenderedImage2
-			{
-				Image(nsImage: NSImage(cgImage: img, size: img.size))
-					.resizable()
-					.aspectRatio(contentMode: .fit)
-					.frame(minWidth: 300,maxWidth: 500,maxHeight: .infinity)
-			}
+			.frame(maxWidth: .infinity,maxHeight: .infinity)
 			
 			SplatSceneView(scene: scene, renderStats: $renderStats, renderer: .metal, assetManager:assetManager)
 				.frame(minWidth: 300,maxWidth: .infinity,maxHeight: .infinity)

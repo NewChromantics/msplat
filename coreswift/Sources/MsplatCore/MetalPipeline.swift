@@ -647,6 +647,60 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
 	return try await msplatRenderWithBuffers(renderParams:p, buffers, queue: ctx.queue, pipelineStates: pso)
 }
 
+
+func GetSplatBuffers(splats:[PlySplatPoint],device:MTLDevice) throws -> SplatBuffers
+{
+	let numSplats = splats.count
+	
+	guard numSplats > 0 else {
+		throw MsplatError("GetSplatBuffers: no splats provided")
+	}
+	
+	// Create GPU tensors from splat data
+	let means3d = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
+	let scales = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
+	let quats = try MTensor(device: device, shape: [numSplats, 4], dtype: .float32)
+	let featuresDc = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
+	let opacities = try MTensor(device: device, shape: [numSplats, 1], dtype: .float32)
+	
+	// Upload splat data using SIMD accessors
+	var means3dPtr = means3d.floats()
+	var scalesPtr = scales.floats()
+	var quatsPtr = quats.floats()
+	var featuresDcPtr = featuresDc.floats()
+	let opacitiesPtr = opacities.floats()
+	
+	for i in 0..<numSplats 
+	{
+		let s = splats[i]
+		// Position
+		means3dPtr[float3: i] = s.position
+		// Scale (log space)
+		scalesPtr[float3: i] = s.scaleLog
+		// Quaternion (w, x, y, z)
+		quatsPtr[float4: i] = s.quaternionWxyz
+		// SH DC term
+		featuresDcPtr[float3: i] = s.shDc
+		// Opacity (logit)
+		opacitiesPtr[i] = s.opacityLogit
+	}
+	
+	// Create empty tensor for higher-order SH (we're only using DC term)
+	// Note: Can't create tensor with 0 dimension, so create minimal [numSplats, 1, 3] but won't be used
+	let featuresRest = try MTensor(device: device, shape: [numSplats, 1, 3], dtype: .float32)
+	
+	let splatBuffers = SplatBuffers(
+		means3d: means3d, 
+		scales: scales, 
+		quats: quats, 
+		featuresDc: featuresDc, 
+		featuresRest: featuresRest, 
+		opacities: opacities
+	)
+	
+	return splatBuffers
+}
+
 /// Convenience function to render splat points directly with camera parameters.
 /// Creates necessary buffers and renders the scene from the given camera pose.
 public func msplatRenderSplats(
@@ -658,66 +712,25 @@ public func msplatRenderSplats(
     intrinsics: CameraIntrinsics,
     backgroundColor: simd_float3,
 	format:RGBImage.ImageFormat
-) async throws -> MTensor {
-    
-    let numSplats = splats.count
+) async throws -> MTensor 
+{
+	let numSplats = splats.count
 	
-    guard numSplats > 0 else {
-        throw MsplatError("msplatRenderSplats: no splats provided")
-    }
-    
-    // Create GPU tensors from splat data
-    let means3d = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
-    let scales = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
-    let quats = try MTensor(device: device, shape: [numSplats, 4], dtype: .float32)
-    let featuresDc = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
-    let opacities = try MTensor(device: device, shape: [numSplats, 1], dtype: .float32)
-    
-    // Upload splat data
-    let means3dPtr = means3d.floats()
-    let scalesPtr = scales.floats()
-    let quatsPtr = quats.floats()
-    let featuresDcPtr = featuresDc.floats()
-    let opacitiesPtr = opacities.floats()
-    
-    for i in 0..<numSplats {
-        let s = splats[i]
-        // Position
-        means3dPtr[i * 3 + 0] = s.position.x
-        means3dPtr[i * 3 + 1] = s.position.y
-        means3dPtr[i * 3 + 2] = s.position.z
-        // Scale (log space)
-        scalesPtr[i * 3 + 0] = s.scaleLog.x
-        scalesPtr[i * 3 + 1] = s.scaleLog.y
-        scalesPtr[i * 3 + 2] = s.scaleLog.z
-        // Quaternion (w, x, y, z)
-        quatsPtr[i * 4 + 0] = s.quaternionWxyz[0]  // w
-        quatsPtr[i * 4 + 1] = s.quaternionWxyz[1] // x
-        quatsPtr[i * 4 + 2] = s.quaternionWxyz[2]  // y
-        quatsPtr[i * 4 + 3] = s.quaternionWxyz[3]  // z
-        // SH DC term
-        featuresDcPtr[i * 3 + 0] = s.shDc.x
-        featuresDcPtr[i * 3 + 1] = s.shDc.y
-        featuresDcPtr[i * 3 + 2] = s.shDc.z
-        // Opacity (logit)
-        opacitiesPtr[i] = s.opacityLogit
-    }
-    
-    // Create empty tensor for higher-order SH (we're only using DC term)
-    // Note: Can't create tensor with 0 dimension, so create minimal [numSplats, 1, 3] but won't be used
-    let featuresRest = try MTensor(device: device, shape: [numSplats, 1, 3], dtype: .float32)
-    
-    // Calculate tile bounds
-    let tileSizeX = 16
-    let tileSizeY = 16
-    let tilesX = (intrinsics.width + tileSizeX - 1) / tileSizeX
-    let tilesY = (intrinsics.height + tileSizeY - 1) / tileSizeY
-    
+	guard numSplats > 0 else {
+		throw MsplatError("msplatRenderSplats: no splats provided")
+	}
 	
-	let splatBuffers = SplatBuffers(means3d: means3d, scales: scales, quats: quats, featuresDc: featuresDc, featuresRest: featuresRest, opacities: opacities)
+	let splatBuffers = try GetSplatBuffers(splats: splats, device: device)
+
+	/*
+	// Calculate tile bounds
+	let tileSizeX = 16
+	let tileSizeY = 16
+	let tilesX = (intrinsics.width + tileSizeX - 1) / tileSizeX
+	let tilesY = (intrinsics.height + tileSizeY - 1) / tileSizeY
+	*/
 	
-    // Create render parameters
-    let renderParams = RenderParams(
+	let renderParams = RenderParams(
 		numPoints: numSplats,
 		splatBuffers:splatBuffers,
 		globScale: 1.0,
@@ -725,10 +738,10 @@ public func msplatRenderSplats(
 		projmat: cameraRenderParams.projViewMat.toFloat4x4(),
 		camPos: cameraRenderParams.camPos, 
 		intrinsics: cameraRenderParams.intrinsics,
-		tileBounds: (tilesX, tilesY, 1),
+		tileBounds: cameraRenderParams.tileBounds,
 		clipThresh: 0.01,
-		degree: 3,
-		degreesToUse: 3,
+		degree: UInt32(cameraRenderParams.degrees),
+		degreesToUse: UInt32(cameraRenderParams.degreesToUse),
 		background: backgroundColor,
 		channels: UInt32(format.channels)
 	)
