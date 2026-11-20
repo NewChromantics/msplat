@@ -58,7 +58,7 @@ public struct MsplatConfig
     public var splitScreenSize: Float = 0.05
     public var keepCrs: Bool = false
     /// Default magenta — high contrast, makes under-reconstructed regions obvious.
-    public var bgColor: (Float, Float, Float) = (0.6130, 0.0101, 0.3984)
+    public var bgColor = simd_float3(0.6130, 0.0101, 0.3984)
 
     public init() {}
 }
@@ -192,7 +192,7 @@ public final class SplatTrainer {
             densifyGradThresh: config.densifyGradThresh, densifySizeThresh: config.densifySizeThresh,
             stopScreenSizeAt: Int(config.stopScreenSizeAt), splitScreenSize: config.splitScreenSize,
             maxSteps: Int(config.iterations), keepCrs: config.keepCrs,
-            bgColor: config.bgColor)
+			backgroundColor: config.bgColor)
         camIndices = Array(0..<dataset.cameras.count)
         shuffleCameras()
     }

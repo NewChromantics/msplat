@@ -65,7 +65,8 @@ struct OverflowCheck {
 
 /// All intermediate GPU buffers, reused across iterations. Sizes only change at
 /// densification or resolution changes.
-struct FusedTensorCache {
+struct FusedTensorCache 
+{
     var fwdNumPoints = 0, capacity = 0, imgHeight = 0, imgWidth = 0, numTiles = 0
     var bwdNumPoints = 0, featuresRestBases = 0, channels = 0
 

@@ -243,7 +243,8 @@ final class Engine
 		camera: CameraMeta,
 		targetWidth: Int,
 		targetHeight: Int,
-		format:RGBImage.ImageFormat
+		format:RGBImage.ImageFormat,
+		backgroundColour:simd_float3
 	) async throws -> RGBImage
 	{
 		let shDegrees = 3
@@ -258,7 +259,7 @@ final class Engine
 			pipelineStates: RenderPipelineStates(ctx: metalContext),
 			cameraRenderParams: cameraRenderParams,
 			intrinsics: camera.intrinsics,
-			backgroundColor: simd_float3(0, 0, 0),
+			backgroundColor: backgroundColour,
 			format: format
 		)
 		
@@ -272,7 +273,7 @@ final class Engine
 		var config = MsplatConfig()
 		config.iterations = Int32(totalIterations)
 		config.numDownscales = 0
-		config.bgColor = (0, 0, 0)
+		config.bgColor = simd_float3(1, 0, 1)
 		
 		let trainer = try SplatTrainer(context:metalContext, dataset: inputData, config: config)
 		
@@ -318,7 +319,8 @@ final class Engine
 					camera: renderCamera.meta,
 					targetWidth: renderCamera.meta.width,
 					targetHeight: renderCamera.meta.height,
-					format: .rgba
+					format: .rgba,
+					backgroundColour: config.bgColor
 				)
 
 				

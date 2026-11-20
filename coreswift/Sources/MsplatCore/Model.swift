@@ -83,7 +83,7 @@ extension CameraMeta
 													camToWorld: self.camToWorld)
 		cameraRenderParams.viewMat = try metalContext.makeEmpty([4, 4])
 		cameraRenderParams.viewMat.copyIn(viewMatrix)
-		cameraRenderParams.projectionMatrix = simd_float4x4(rowMajor:projectionMatrix)
+		//cameraRenderParams.projectionMatrix = simd_float4x4(rowMajor:projectionMatrix)
 		cameraRenderParams.projViewMat = try metalContext.makeEmpty([4, 4])
 		cameraRenderParams.projViewMat.copyIn(pvm)
 		cameraRenderParams.fovX = fovX
@@ -322,7 +322,8 @@ final class Model
          shDegree: Int, shDegreeInterval: Int, refineEvery: Int, warmupLength: Int,
          resetAlphaEvery: Int, densifyGradThresh: Float, densifySizeThresh: Float,
          stopScreenSizeAt: Int, splitScreenSize: Float, maxSteps: Int, keepCrs: Bool,
-         bgColor: (Float, Float, Float)? = nil) throws {
+		 backgroundColor:simd_float3) throws 
+	{
         self.metalContext = metalContext
         self.numCameras = numCameras
         self.numDownscales = numDownscales
@@ -391,9 +392,7 @@ final class Model
         let op = opacities.floats()
         for i in 0..<n { op[i] = logit01 }
 
-        // Background (default magenta: makes under-reconstructed regions obvious)
-        let bg = bgColor ?? (0.6130, 0.0101, 0.3984)
-        backgroundColor = simd_float3(bg.0, bg.1, bg.2)
+		self.backgroundColor = backgroundColor
 
         setupOptimizers()
     }

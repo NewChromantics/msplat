@@ -721,14 +721,6 @@ public func msplatRenderSplats(
 	}
 	
 	let splatBuffers = try GetSplatBuffers(splats: splats, device: device)
-
-	/*
-	// Calculate tile bounds
-	let tileSizeX = 16
-	let tileSizeY = 16
-	let tilesX = (intrinsics.width + tileSizeX - 1) / tileSizeX
-	let tilesY = (intrinsics.height + tileSizeY - 1) / tileSizeY
-	*/
 	
 	let renderParams = RenderParams(
 		numPoints: numSplats,
