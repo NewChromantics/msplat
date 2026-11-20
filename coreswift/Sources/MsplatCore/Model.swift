@@ -8,7 +8,10 @@ import simd
 
 extension CameraMeta
 {
-	public func GetCameraRenderParams(metalContext:MetalContext,cameraIntrinsics:CameraIntrinsics) throws -> CameraRenderParams 
+	//	featuresRestSizeSecondLast is
+	//		featuresRest.size(-2)
+	//	so its the length of... why penultimate?...
+	public func GetCameraRenderParams(metalContext:MetalContext,cameraIntrinsics:CameraIntrinsics,shDegrees:Int,shDegreesToUse:Int) throws -> CameraRenderParams 
 	{
 		let fovX = intrinsics.fovX
 		let fovY = intrinsics.fovY
@@ -69,15 +72,23 @@ extension CameraMeta
 			}
 		}
 		
-		var newCache = CameraRenderParams(intrinsics: cameraIntrinsics, camToWorld: self.camToWorld)
-		newCache.viewMat = try metalContext.makeEmpty([4, 4])
-		newCache.viewMat.copyIn(viewMatrix)
-		newCache.projectionMatrix = simd_float4x4(rowMajor:projectionMatrix)
-		newCache.projViewMat = try metalContext.makeEmpty([4, 4])
-		newCache.projViewMat.copyIn(pvm)
-		newCache.fovX = fovX
-		newCache.fovY = fovY
-		return newCache
+		
+		let tileBounds = ((intrinsics.width + BLOCK_X - 1) / BLOCK_X, (intrinsics.height + BLOCK_Y - 1) / BLOCK_Y, 1)
+
+		
+		var cameraRenderParams = CameraRenderParams(degrees:shDegrees,
+													degreesToUse: shDegreesToUse, 
+													tileBounds:tileBounds, 
+													intrinsics: cameraIntrinsics, 
+													camToWorld: self.camToWorld)
+		cameraRenderParams.viewMat = try metalContext.makeEmpty([4, 4])
+		cameraRenderParams.viewMat.copyIn(viewMatrix)
+		cameraRenderParams.projectionMatrix = simd_float4x4(rowMajor:projectionMatrix)
+		cameraRenderParams.projViewMat = try metalContext.makeEmpty([4, 4])
+		cameraRenderParams.projViewMat.copyIn(pvm)
+		cameraRenderParams.fovX = fovX
+		cameraRenderParams.fovY = fovY
+		return cameraRenderParams
 	}
 }
 
@@ -230,7 +241,9 @@ final class Model
     var densifyRandomSamples = MTensor()
 
     var radii = MTensor()
-    var lastHeight = 0, lastWidth = 0
+	//	these should be passed around after step
+    var lastHeight = 0
+	var lastWidth = 0
 
     var xysGradNorm = MTensor(), visCounts = MTensor(), max2DSize = MTensor()
 
@@ -676,52 +689,33 @@ final class Model
         return step
     }
 
-    // MARK: Per-view setup, render, training iteration
 
-	struct CamSetup 
-	{
-		var intrinsics: CameraIntrinsics
-		var degree: Int
-		var degreesToUse: Int
-		var tileBounds: (Int, Int, Int)
-		var camPos: simd_float3	{	cameraRenderParams.camPos	}
-		var cameraRenderParams : CameraRenderParams
-	}
-
-	func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CamSetup
+	func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CameraRenderParams
 	{
 		let sf = Float(1.0)//Float(getDownscaleFactor(step))
 		
 		// Scale intrinsics by downscale factor
 		let intrinsics = cam.meta.intrinsics.scaled(by: sf)
-		
-		//	need to remake cache
-		let cameraRenderParams = try cam.meta.GetCameraRenderParams(metalContext: metalContext, cameraIntrinsics: intrinsics)
 
 		let b = featuresRest.size(-2) + 1
-		let degree = b <= 1 ? 0 : b <= 4 ? 1 : b <= 9 ? 2 : b <= 16 ? 3 : 4
+		//	degrees depending on buffer size
+		let degrees = b <= 1 ? 0 : b <= 4 ? 1 : b <= 9 ? 2 : b <= 16 ? 3 : 4
+		let degreesToUse = min(step / shDegreeInterval, shDegree)
 		
-		return CamSetup(
-			intrinsics: intrinsics,
-			degree: degree, 
-			degreesToUse: min(step / shDegreeInterval, shDegree),
-			tileBounds: ((intrinsics.width + BLOCK_X - 1) / BLOCK_X, (intrinsics.height + BLOCK_Y - 1) / BLOCK_Y, 1),
-			cameraRenderParams: cameraRenderParams)
-    }
-
-    
+		//	need to remake cache
+		let cameraRenderParams = try cam.meta.GetCameraRenderParams(metalContext: metalContext, cameraIntrinsics: intrinsics, shDegrees:degrees, shDegreesToUse:degreesToUse)
+		return cameraRenderParams
+	}
 
 
 
-    func render(_ cam: RuntimeCamera, step: Int, channels:Int) async throws -> MTensor 
+
+	func render(_ cam: RuntimeCamera, step: Int, channels:Int) async throws -> MTensor 
 	{
-        let camSetup = try prepareCam(cam, step: step)
-		let cameraRenderParams = camSetup.cameraRenderParams
-		
-		let renderParams = GetRenderParams(camSetup: camSetup, channels: channels)
-		
+		let cameraRenderParams = try prepareCam(cam, step: step)
+		let renderParams = GetRenderParams(cameraRenderParams: cameraRenderParams, channels: channels)
 		return try await msplatRender(renderParams, metalContext)
-    }
+	}
 
 	func GetSplatBuffers() -> SplatBuffers
 	{
@@ -733,10 +727,8 @@ final class Model
 			  opacities: opacities)
 	}
 	
-	func GetRenderParams(camSetup:CamSetup,channels:Int) -> RenderParams
+	func GetRenderParams(cameraRenderParams:CameraRenderParams,channels:Int) -> RenderParams
 	{
-		let cameraRenderParams = camSetup.cameraRenderParams
-		
 		let splatBuffers = GetSplatBuffers()
 		
 		let renderParams = RenderParams(
@@ -746,11 +738,11 @@ final class Model
 			viewmat: cameraRenderParams.viewMat.toFloat4x4(), 
 			projmat: cameraRenderParams.projViewMat.toFloat4x4(),
 			camPos: cameraRenderParams.camPos,
-			intrinsics: camSetup.intrinsics,
-			tileBounds: camSetup.tileBounds,
+			intrinsics: cameraRenderParams.intrinsics,
+			tileBounds: cameraRenderParams.tileBounds,
 			clipThresh: 0.01,
-			degree: UInt32(camSetup.degree), 
-			degreesToUse: UInt32(camSetup.degreesToUse),
+			degree: UInt32(cameraRenderParams.degrees), 
+			degreesToUse: UInt32(cameraRenderParams.degreesToUse),
 			background: backgroundColor, 
 			channels: UInt32(channels)
 		)
@@ -833,9 +825,9 @@ final class Model
 	
 	func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) async throws 
 	{
-        let camSetup = try prepareCam(cam, step: step)
-        lastHeight = camSetup.intrinsics.height
-		lastWidth = camSetup.intrinsics.width
+        let cameraRenderParams = try prepareCam(cam, step: step)
+        lastHeight = cameraRenderParams.intrinsics.height
+		lastWidth = cameraRenderParams.intrinsics.width
         let numPoints = means.size(0)
 
         if !window2d.defined {
@@ -843,21 +835,22 @@ final class Model
             window2d.copyIn(createSSIMWindow(windowSize: 11, sigma: 1.5))
         }
 
-        adamStepCount += 1
-        // C++ std::pow(float, int) promotes to double; mirror that for identical rounding.
-        let bc1 = Float(1.0 - pow(Double(adamBeta1), Double(adamStepCount)))
-        let bc2 = Float(1.0 - pow(Double(adamBeta2), Double(adamStepCount)))
-        let stepSizes = adamLr.map { $0 / bc1 }
-        let bc2Sqrts = [Float](repeating: bc2.squareRoot(), count: Model.nAdamGroups)
+		adamStepCount += 1
+		// C++ std::pow(float, int) promotes to double; mirror that for identical rounding.
+		let bc1 = Float(1.0 - pow(Double(adamBeta1), Double(adamStepCount)))
+		let bc2 = Float(1.0 - pow(Double(adamBeta2), Double(adamStepCount)))
+		let stepSizes = adamLr.map { $0 / bc1 }
+		let bc2Sqrts = [Float](repeating: bc2.squareRoot(), count: Model.nAdamGroups)
 
-        if !xysGradNorm.defined {
-            xysGradNorm = try! metalContext.makeZeros([numPoints])
-            visCounts = try! metalContext.makeZeros([numPoints])
-            max2DSize = try! metalContext.makeZeros([numPoints])
-        }
+		if !xysGradNorm.defined
+		{
+			xysGradNorm = try! metalContext.makeZeros([numPoints])
+			visCounts = try! metalContext.makeZeros([numPoints])
+			max2DSize = try! metalContext.makeZeros([numPoints])
+		}
 
-        let invMaxDim = 1.0 / Float(max(lastHeight, lastWidth))
-        let lossInvN = 1.0 / Float(camSetup.intrinsics.height * camSetup.intrinsics.width * 3)
+		let invMaxDim = 1.0 / Float(max(lastHeight, lastWidth))
+		let lossInvN = 1.0 / Float(cameraRenderParams.intrinsics.height * cameraRenderParams.intrinsics.width * 3)
 
 		let params = TrainParams(
 			gt: gt,
@@ -879,7 +872,7 @@ final class Model
 			invMaxDim: invMaxDim)
 
 		let renderChannels = 3
-		let renderParams = GetRenderParams(camSetup: camSetup, channels: renderChannels)
+		let renderParams = GetRenderParams(cameraRenderParams: cameraRenderParams, channels: renderChannels)
 		/*
 		let renderParams = RenderParams(
 			numPoints: means.size(0), 

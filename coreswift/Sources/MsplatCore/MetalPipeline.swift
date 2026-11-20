@@ -117,7 +117,7 @@ public struct SplatBuffers
 	var opacities : MTensor
 }
 
-/// Per-view camera/render parameters shared by render and train step.
+// Per-view camera/render parameters shared by render and train step.
 public struct RenderParams 
 {
 	var numPoints: Int
@@ -129,7 +129,8 @@ public struct RenderParams
 	var intrinsics: CameraIntrinsics
 	var tileBounds: (Int, Int, Int)
 	var clipThresh: Float
-	var degree: UInt32, degreesToUse: UInt32
+	var degree: UInt32
+	var degreesToUse: UInt32
 	var background: simd_float3
 	var channels: UInt32  // 3 for RGB, 4 for RGBA
 }
@@ -655,12 +656,12 @@ public func msplatRenderSplats(
     pipelineStates: RenderPipelineStates,
 	cameraRenderParams:CameraRenderParams,
     intrinsics: CameraIntrinsics,
-    shDegree: Int = 3,
     backgroundColor: simd_float3,
 	format:RGBImage.ImageFormat
 ) async throws -> MTensor {
     
     let numSplats = splats.count
+	
     guard numSplats > 0 else {
         throw MsplatError("msplatRenderSplats: no splats provided")
     }
@@ -723,10 +724,10 @@ public func msplatRenderSplats(
 		viewmat: cameraRenderParams.viewMat.toFloat4x4(), 
 		projmat: cameraRenderParams.projViewMat.toFloat4x4(),
 		camPos: cameraRenderParams.camPos, 
-		intrinsics: intrinsics,
+		intrinsics: cameraRenderParams.intrinsics,
 		tileBounds: (tilesX, tilesY, 1),
 		clipThresh: 0.01,
-		degree: UInt32(shDegree),
+		degree: 3,
 		degreesToUse: 3,
 		background: backgroundColor,
 		channels: UInt32(format.channels)

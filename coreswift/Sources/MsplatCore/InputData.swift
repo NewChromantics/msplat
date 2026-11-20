@@ -81,6 +81,9 @@ public struct CameraMeta
 /// Cached camera transforms and projection data computed during rendering
 public struct CameraRenderParams 
 {
+	public var degrees: Int
+	public var degreesToUse: Int
+	public var tileBounds: (Int, Int, Int)
 	public var intrinsics : CameraIntrinsics
 	public var viewMat = MTensor()			//	world to camera
 	public var camToWorld : simd_float4x4

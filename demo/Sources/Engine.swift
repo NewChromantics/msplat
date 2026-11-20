@@ -246,7 +246,8 @@ final class Engine
 		format:RGBImage.ImageFormat
 	) async throws -> RGBImage
 	{
-		let cameraRenderParams = try camera.GetCameraRenderParams(metalContext: metalContext, cameraIntrinsics: camera.intrinsics)
+		let shDegrees = 3
+		let cameraRenderParams = try camera.GetCameraRenderParams(metalContext: metalContext, cameraIntrinsics: camera.intrinsics, shDegrees:shDegrees, shDegreesToUse:shDegrees)
 		
 		
 		// Render from the splats without trainer buffers
@@ -257,8 +258,7 @@ final class Engine
 			pipelineStates: RenderPipelineStates(ctx: metalContext),
 			cameraRenderParams: cameraRenderParams,
 			intrinsics: camera.intrinsics,
-			shDegree: 3,
-			backgroundColor: simd_float3(1, 0, 0),
+			backgroundColor: simd_float3(0, 0, 0),
 			format: format
 		)
 		
