@@ -81,16 +81,17 @@ public struct CameraMeta
 /// Cached camera transforms and projection data computed during rendering
 public struct CameraRenderParams 
 {
-    public var viewMat = MTensor()			//	world to camera
+	public var intrinsics : CameraIntrinsics
+	public var viewMat = MTensor()			//	world to camera
 	public var camToWorld : simd_float4x4
 	public var projectionMatrix = simd_float4x4()
 	public var projViewMat = MTensor()
 	public var camPos: simd_float3	{	camToWorld.transpose.columns.3.xyz	}
 	public var fovX: Float = 0
 	public var fovY: Float = 0
-    
+
 	public var isDefined: Bool { viewMat.defined && projViewMat.defined }
-    
+
 	public mutating func clear() 
 	{
         viewMat.reset()

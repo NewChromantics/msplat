@@ -531,7 +531,7 @@ kernel void nd_rasterize_forward_kernel(
     device float* final_Ts,
     device int* final_index,
     device float* out_img,
-    constant float* background,
+    constant float3& background,
     constant uint2& blockDim,
     uint2 blockIdx [[threadgroup_position_in_grid]],
     uint2 threadIdx [[thread_position_in_threadgroup]],

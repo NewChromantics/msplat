@@ -240,13 +240,13 @@ final class Engine
 	/// This replicates the trainer's rendering pipeline without using the trainer's internal buffers.
 	nonisolated private func renderFromSplats(
 		_ splats: [PlySplatPoint],
-		camera: RuntimeCamera,
+		camera: CameraMeta,
 		targetWidth: Int,
 		targetHeight: Int,
 		format:RGBImage.ImageFormat
 	) async throws -> RGBImage
 	{
-		let cameraRenderParams = try camera.meta.GetCameraRenderParams(metalContext: metalContext, fovX: camera.meta.intrinsics.fovX, fovY: camera.meta.intrinsics.fovY)
+		let cameraRenderParams = try camera.GetCameraRenderParams(metalContext: metalContext, cameraIntrinsics: camera.intrinsics)
 		
 		
 		// Render from the splats without trainer buffers
@@ -256,21 +256,13 @@ final class Engine
 			queue: metalContext.queue,
 			pipelineStates: RenderPipelineStates(ctx: metalContext),
 			cameraRenderParams: cameraRenderParams,
-			intrinsics: camera.meta.intrinsics,
+			intrinsics: camera.intrinsics,
 			shDegree: 3,
 			backgroundColor: simd_float3(1, 0, 0),
 			format: format
 		)
 		
-		// Convert tensor to RGBImage
-		let h = splatRenderTensor.size(0)
-		let w = splatRenderTensor.size(1)
-		let ch = splatRenderTensor.size(2)
-		let format: RGBImage.ImageFormat = (ch == 4) ? .rgba : .rgb
-		
-		// Copy tensor data to array
-		let pixels = splatRenderTensor.toFloatArray()
-		return try RGBImage(data: pixels, width: w, height: h, format: format)
+		return try SplatTrainer.PixelTensorToRgbImage(pixels: splatRenderTensor, expectedFormat: format)
 	}
 	
 	nonisolated private func performTraining(inputData:SplatInputData, totalIterations: Int) async throws
@@ -323,11 +315,12 @@ final class Engine
 				// Get splats and render using standalone pipeline (for comparison/validation)
 				let splatRender = try await renderFromSplats(
 					splats,
-					camera: renderCamera,
+					camera: renderCamera.meta,
 					targetWidth: renderCamera.meta.width,
 					targetHeight: renderCamera.meta.height,
 					format: .rgba
 				)
+
 				
 				//	Convert to CGImages for display
 				do

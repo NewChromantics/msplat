@@ -230,7 +230,6 @@ public final class MetalContext : @unchecked Sendable
     var trainOverflowCheck = OverflowCheck()
     
     // Diagnostic counters
-    var renderDiagCount = 0
     var trainDiagIt = 0
 
     public init() throws {

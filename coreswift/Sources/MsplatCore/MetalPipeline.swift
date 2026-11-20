@@ -106,25 +106,32 @@ public struct CameraIntrinsics {
     }
 }
 
+
+public struct SplatBuffers
+{
+	var means3d : MTensor
+	var scales : MTensor
+	var quats : MTensor
+	var featuresDc : MTensor
+	var featuresRest : MTensor
+	var opacities : MTensor
+}
+
 /// Per-view camera/render parameters shared by render and train step.
-public struct RenderParams {
-    var numPoints: Int
-    var means3d: MTensor
-    var scales: MTensor
-    var globScale: Float
-    var quats: MTensor
-    var viewmat: simd_float4x4
-    var projmat: simd_float4x4
-    var intrinsics: CameraIntrinsics
-    var tileBounds: (Int, Int, Int)
-    var clipThresh: Float
-    var degree: UInt32, degreesToUse: UInt32
-    var camPos: simd_float3
-    var featuresDc: MTensor
-    var featuresRest: MTensor
-    var opacities: MTensor
-    var background: MTensor
-    var channels: UInt32  // 3 for RGB, 4 for RGBA
+public struct RenderParams 
+{
+	var numPoints: Int
+	var splatBuffers : SplatBuffers
+	var globScale: Float
+	var viewmat: simd_float4x4
+	var projmat: simd_float4x4
+	var camPos: simd_float3
+	var intrinsics: CameraIntrinsics
+	var tileBounds: (Int, Int, Int)
+	var clipThresh: Float
+	var degree: UInt32, degreesToUse: UInt32
+	var background: simd_float3
+	var channels: UInt32  // 3 for RGB, 4 for RGBA
 }
 
 /// Training-only inputs to the fused step.
@@ -198,13 +205,14 @@ private func computeKMax(numTiles: Int, capacity: Int) -> UInt32 {
 // MARK: - Shared forward-stage encoders
 
 private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelineStates,
-                          _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) {
+                          _ p: RenderParams, _ k: Consts, _ cache: FusedTensorCache) 
+{
     enc.setComputePipelineState(pso.project_and_sh_forward)
     enc.setScalar(Int32(p.numPoints), 0)
-    enc.setTensor(p.means3d, 1)
-	enc.setTensor(p.scales, 2)
+	enc.setTensor(p.splatBuffers.means3d, 1)
+	enc.setTensor(p.splatBuffers.scales, 2)
     enc.setScalar(p.globScale, 3)
-	enc.setTensor(p.quats, 4)
+	enc.setTensor(p.splatBuffers.quats, 4)
     // Pass matrices directly as bytes instead of MTensor buffers
     var viewmat = p.viewmat
     var projmat = p.projmat
@@ -222,8 +230,8 @@ private func encodeProjSh(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipeline
     enc.setScalar(p.degree, 16)
 	enc.setScalar(p.degreesToUse, 17)
     enc.setArray(k.camPos4, 18)
-    enc.setTensor(p.featuresDc, 19)
-	enc.setTensor(p.featuresRest, 20)
+	enc.setTensor(p.splatBuffers.featuresDc, 19)
+	enc.setTensor(p.splatBuffers.featuresRest, 20)
     enc.setTensor(cache.colors, 21)
 	enc.setTensor(cache.aabb, 22)
     // buffer 23 removed (was opacity-aware AABB, reverted)
@@ -257,7 +265,7 @@ private func encodePrefixMap(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipel
     enc.setTensor(cache.gaussianIds, 3)
     enc.setScalar(numTilesU32, 4)
     enc.setTensor(cache.xys, 5); enc.setTensor(cache.conics, 6)
-    enc.setTensor(cache.colors, 7); enc.setTensor(p.opacities, 8)
+	enc.setTensor(cache.colors, 7); enc.setTensor(p.splatBuffers.opacities, 8)
     enc.setTensor(cache.packedXyOpac, 9); enc.setTensor(cache.packedConic, 10); enc.setTensor(cache.packedRgb, 11)
     enc.setTensor(cache.tileBins, 12)
     enc.dispatchThreadgroups(MTLSize(width: k.numTiles, height: 1, depth: 1),
@@ -275,6 +283,7 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelin
 
     if kMax <= 1 {
         // Monolithic
+		var background = p.background
         enc.setComputePipelineState(pso.nd_rasterize_forward)
         enc.setArray(k.tileBoundsArr, 0)
         enc.setArray(k.imgSizeDim3, 1)
@@ -286,10 +295,13 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelin
         enc.setTensor(cache.finalTs, 7)
 		enc.setTensor(cache.finalIdx, 8)
 		enc.setTensor(cache.outImg, 9)
-        enc.setTensor(p.background, 10)
+		enc.setBytes(&background, index: 10)
         enc.setArray(k.blockSizeDim2, 11)
         enc.dispatchThreadgroups(MTLSize(width: tileX, height: tileY, depth: 1), threadsPerThreadgroup: tg)
-    } else {
+    }
+	else 
+	{
+		fatalError("never used?")
         // Phase 1: chunked forward — grid (tile_x, tile_y, K_max)
         let numPix = UInt32(w * h)
         enc.setComputePipelineState(pso.rasterize_forward_chunked)
@@ -318,7 +330,7 @@ private func encodeRastFwd(_ enc: MTLComputeCommandEncoder, _ pso: RenderPipelin
         enc.setTensor(cache.finalTs, 5)
 		enc.setTensor(cache.finalIdx, 6)
 		enc.setTensor(cache.outImg, 7)
-        enc.setTensor(p.background, 8)
+        enc.setScalar(p.background, 8)
         enc.setArray(k.imgSize2, 9)
         enc.setScalar(channels, 10)
         enc.dispatchThreads(MTLSize(width: w, height: h, depth: 1),
@@ -590,25 +602,7 @@ func msplatRender(_ p: RenderParams, _ ctx: MetalContext) async throws -> MTenso
     ctx.tensorCache.ensureForwardPassBuffers(np: p.numPoints, cap: k.capacity, ih: p.intrinsics.height,
                                iw: p.intrinsics.width, nt: k.numTiles, ch: Int(p.channels), ctx: ctx)
 
-    ctx.renderDiagCount += 1
-    if benchmarkEnabled && [100, 500, 1500].contains(ctx.renderDiagCount) {
-        logErr("""
-
-            === Roofline Dimensions (iter \(ctx.renderDiagCount)) ===
-              num_points:     \(p.numPoints)
-              capacity:       \(k.capacity) (= num_tiles * \(MAX_TILE_ELEMS))
-              img:            \(p.intrinsics.width) x \(p.intrinsics.height) = \(p.intrinsics.width * p.intrinsics.height) pixels
-              tiles:          \(k.tileBoundsX) x \(k.tileBoundsY) = \(k.numTiles)
-              SH degree:      \(p.degree) (bases: \((p.degree + 1) * (p.degree + 1)))
-              features_rest:  [\(p.featuresRest.size(0)) x \(p.featuresRest.size(1)) x \(p.featuresRest.size(2))]
-              sort:           tile-local (bitonic, max 2048/tile)
-              sort buffer:    \(String(format: "%.1f", Double(k.capacity) * 8.0 / 1e6)) MB (sort_pairs)
-              opacities:      [\(p.opacities.size(0))]
-            ===========================
-
-            """)
-    }
-
+ 
     let kMax = computeKMax(numTiles: k.numTiles, capacity: k.capacity)
     if kMax > 1
 	{
@@ -677,7 +671,6 @@ public func msplatRenderSplats(
     let quats = try MTensor(device: device, shape: [numSplats, 4], dtype: .float32)
     let featuresDc = try MTensor(device: device, shape: [numSplats, 3], dtype: .float32)
     let opacities = try MTensor(device: device, shape: [numSplats, 1], dtype: .float32)
-    let background = try MTensor(device: device, shape: [3], dtype: .float32)
     
     // Upload splat data
     let means3dPtr = means3d.floats()
@@ -709,12 +702,6 @@ public func msplatRenderSplats(
         opacitiesPtr[i] = s.opacityLogit
     }
     
-    // Background color
-    let bgPtr = background.floats()
-    bgPtr[0] = backgroundColor.x
-    bgPtr[1] = backgroundColor.y
-    bgPtr[2] = backgroundColor.z
-    
     // Create empty tensor for higher-order SH (we're only using DC term)
     // Note: Can't create tensor with 0 dimension, so create minimal [numSplats, 1, 3] but won't be used
     let featuresRest = try MTensor(device: device, shape: [numSplats, 1, 3], dtype: .float32)
@@ -725,34 +712,26 @@ public func msplatRenderSplats(
     let tilesX = (intrinsics.width + tileSizeX - 1) / tileSizeX
     let tilesY = (intrinsics.height + tileSizeY - 1) / tileSizeY
     
-    // Compute view matrix and combined projection-view matrix (matching Model.renderParams)
-	let viewMatrix = cameraRenderParams.camToWorld.inverse  // world-to-cam
-	let projViewMatrix = cameraRenderParams.projectionMatrix * viewMatrix  // Combined matrix like Model does
-    
 	
+	let splatBuffers = SplatBuffers(means3d: means3d, scales: scales, quats: quats, featuresDc: featuresDc, featuresRest: featuresRest, opacities: opacities)
 	
     // Create render parameters
     let renderParams = RenderParams(
-        numPoints: numSplats,
-        means3d: means3d,
-        scales: scales,
-        globScale: 1.0,
-        quats: quats,
-        viewmat: viewMatrix,
-        projmat: projViewMatrix,  // Combined projection×view matrix!
-        intrinsics: intrinsics,
-        tileBounds: (tilesX, tilesY, 1),
-        clipThresh: 0.01,
-        degree: UInt32(shDegree),
-        degreesToUse: 3,  // Only DC term
-		camPos: cameraRenderParams.camPos,
-        featuresDc: featuresDc,
-        featuresRest: featuresRest,
-        opacities: opacities,
-        background: background,
+		numPoints: numSplats,
+		splatBuffers:splatBuffers,
+		globScale: 1.0,
+		viewmat: cameraRenderParams.viewMat.toFloat4x4(), 
+		projmat: cameraRenderParams.projViewMat.toFloat4x4(),
+		camPos: cameraRenderParams.camPos, 
+		intrinsics: intrinsics,
+		tileBounds: (tilesX, tilesY, 1),
+		clipThresh: 0.01,
+		degree: UInt32(shDegree),
+		degreesToUse: 3,
+		background: backgroundColor,
 		channels: UInt32(format.channels)
-    )
-    
+	)
+
     // Calculate buffer requirements
     let k = Consts(renderParams)
     let kMax = Int(computeKMax(numTiles: k.numTiles, capacity: k.capacity))
@@ -889,7 +868,7 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
             enc.setTensor(c.gaussianIds, 2); enc.setTensor(c.tileBins, 3)
             enc.setTensor(c.packedXyOpac, 4); enc.setTensor(c.packedConic, 5)
             enc.setTensor(c.packedRgb, 6)
-            enc.setTensor(p.background, 7); enc.setTensor(c.finalTs, 8)
+            enc.setScalar(p.background, 7); enc.setTensor(c.finalTs, 8)
             enc.setTensor(c.finalIdx, 9); enc.setTensor(c.vRendered, 10)
             enc.setTensor(c.vXy, 11); enc.setTensor(c.vConic, 12)
             enc.setTensor(c.vColorsRast, 13); enc.setTensor(c.vOpacity, 14)
@@ -913,7 +892,7 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
             enc.setTensor(c.gaussianIds, 2); enc.setTensor(c.tileBins, 3)
             enc.setTensor(c.packedXyOpac, 4); enc.setTensor(c.packedConic, 5)
             enc.setTensor(c.packedRgb, 6)
-            enc.setTensor(p.background, 7); enc.setTensor(c.finalTs, 8)
+            enc.setScalar(p.background, 7); enc.setTensor(c.finalTs, 8)
             enc.setTensor(c.chunkFinalIdx, 9)
             enc.setTensor(c.prefixT, 10); enc.setTensor(c.chunkT, 11)
             enc.setTensor(c.afterC, 12)
@@ -926,10 +905,14 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
         }
     }
 
-    func encodeProjShBwdAdam(_ enc: MTLComputeCommandEncoder) {
+    func encodeProjShBwdAdam(_ enc: MTLComputeCommandEncoder)
+	{
         enc.setComputePipelineState(ctx.project_and_sh_backward)
-        enc.setScalar(Int32(p.numPoints), 0); enc.setTensor(p.means3d, 1); enc.setTensor(p.scales, 2)
-        enc.setScalar(p.globScale, 3); enc.setTensor(p.quats, 4)
+        enc.setScalar(Int32(p.numPoints), 0)
+		enc.setTensor(p.splatBuffers.means3d, 1)
+		enc.setTensor(p.splatBuffers.scales, 2)
+		enc.setScalar(p.globScale, 3)
+		enc.setTensor(p.splatBuffers.quats, 4)
         // Pass matrices directly as bytes instead of MTensor buffers
         var viewmat = p.viewmat
         var projmat = p.projmat
@@ -937,10 +920,16 @@ func msplatTrainStep(_ p: RenderParams, _ t: TrainParams, _ ctx: MetalContext) a
         enc.setBytes(&projmat, length: MemoryLayout<simd_float4x4>.size, index: 6)
         enc.setArray(k.projIntrins, 7)
         enc.setArray(k.imgSize2, 8)
-        enc.setTensor(c.radiiOut, 9); enc.setTensor(c.conics, 10)
-        enc.setTensor(c.vXy, 11); enc.setTensor(c.vDepth, 12); enc.setTensor(c.vConic, 13)
-        enc.setTensor(c.vMean3d, 14); enc.setTensor(c.vScale, 15); enc.setTensor(c.vQuat, 16)
-        enc.setScalar(p.degree, 17); enc.setScalar(p.degreesToUse, 18)
+        enc.setTensor(c.radiiOut, 9)
+		enc.setTensor(c.conics, 10)
+        enc.setTensor(c.vXy, 11)
+		enc.setTensor(c.vDepth, 12)
+		enc.setTensor(c.vConic, 13)
+        enc.setTensor(c.vMean3d, 14)
+		enc.setTensor(c.vScale, 15)
+		enc.setTensor(c.vQuat, 16)
+        enc.setScalar(p.degree, 17)
+		enc.setScalar(p.degreesToUse, 18)
         enc.setArray(k.camPos4, 19)
         enc.setTensor(c.vColorsRast, 20)
         // Fused SH backward + Adam: params + optimizer state instead of grad buffers

@@ -249,16 +249,26 @@ public final class SplatTrainer {
         return MsplatEvalMetrics()
     }
 
+	public static func PixelTensorToRgbImage(pixels:MTensor,expectedFormat:RGBImage.ImageFormat) throws -> RGBImage
+	{
+		let h = pixels.size(0)
+		let w = pixels.size(1)
+		let channels = pixels.size(2)
+		guard channels == expectedFormat.channels else
+		{
+			throw MsplatError("Rendered wrong number of channels")
+		}
+		let pixels = pixels.toFloatArray()
+		return try RGBImage(data: pixels, width: w, height: h, format: expectedFormat)
+	}
+	
 	private func renderToImage(_ cam: RuntimeCamera, format: RGBImage.ImageFormat) async throws -> RGBImage 
 	{
-        // Render executes its own GPU work and waits for completion
-        let rgb = try await model.render(cam, step: currentStep, channels: format.channels)
-        
-        let h = rgb.size(0)
-		let w = rgb.size(1)
-		let pixels = rgb.toFloatArray()
-        return try RGBImage(data: pixels, width: w, height: h, format: format)
-    }
+		// Render executes its own GPU work and waits for completion
+		let rgb = try await model.render(cam, step: currentStep, channels: format.channels)
+		return try Self.PixelTensorToRgbImage(pixels: rgb, expectedFormat: format)
+		
+	}
 
     /// Render a camera view. Nil if the index is out of range.
     public func render(cameraIndex: Int, format: RGBImage.ImageFormat) async throws -> RGBImage

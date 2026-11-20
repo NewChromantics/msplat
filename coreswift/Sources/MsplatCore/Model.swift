@@ -8,8 +8,10 @@ import simd
 
 extension CameraMeta
 {
-	public func GetCameraRenderParams(metalContext:MetalContext, fovX: Float, fovY: Float) throws -> CameraRenderParams 
+	public func GetCameraRenderParams(metalContext:MetalContext,cameraIntrinsics:CameraIntrinsics) throws -> CameraRenderParams 
 	{
+		let fovX = intrinsics.fovX
+		let fovY = intrinsics.fovY
 		let d = self.camToWorld
 		
 		// Extract rotation (flip Y and Z for OpenGL to view space conversion)
@@ -67,7 +69,7 @@ extension CameraMeta
 			}
 		}
 		
-		var newCache = CameraRenderParams(camToWorld: self.camToWorld)
+		var newCache = CameraRenderParams(intrinsics: cameraIntrinsics, camToWorld: self.camToWorld)
 		newCache.viewMat = try metalContext.makeEmpty([4, 4])
 		newCache.viewMat.copyIn(viewMatrix)
 		newCache.projectionMatrix = simd_float4x4(rowMajor:projectionMatrix)
@@ -152,7 +154,7 @@ public struct GPUMemoryBreakdown {
 	public var adamBuffers: Int = 0          // adamExpAvgBuf, adamExpAvgSqBuf
 	public var densificationScratch: Int = 0 // all densify* tensors
 	public var trainingState: Int = 0        // xysGradNorm, visCounts, max2DSize, radii
-	public var other: Int = 0                // backgroundColor, window2d
+	public var other: Int = 0                // window2d
 	
 	public var total: Int {
 		gaussianParams + gaussianBuffers + adamState + adamBuffers + 
@@ -232,7 +234,7 @@ final class Model
 
     var xysGradNorm = MTensor(), visCounts = MTensor(), max2DSize = MTensor()
 
-    var backgroundColor = MTensor()
+    var backgroundColor: simd_float3 = simd_float3(0, 0, 0)
     var window2d = MTensor()  // SSIM window (11, 11)
 
     let numCameras: Int
@@ -263,7 +265,6 @@ final class Model
         featuresDc.reset()
 		featuresRest.reset()
 		opacities.reset()
-        backgroundColor.reset()
 		window2d.reset()
         radii.reset()
 		xysGradNorm.reset()
@@ -345,9 +346,8 @@ final class Model
         for i in 0..<n { op[i] = logit01 }
 
         // Background (default magenta: makes under-reconstructed regions obvious)
-		backgroundColor = try metalContext.makeEmpty([3])
         let bg = bgColor ?? (0.6130, 0.0101, 0.3984)
-        backgroundColor.copyIn([bg.0, bg.1, bg.2])
+        backgroundColor = simd_float3(bg.0, bg.1, bg.2)
 
         setupOptimizers()
     }
@@ -678,59 +678,84 @@ final class Model
 
     // MARK: Per-view setup, render, training iteration
 
-    struct CamSetup {
-        var intrinsics: CameraIntrinsics
-        var degree: Int, degreesToUse: Int
-        var tileBounds: (Int, Int, Int)
-        var camPos: simd_float3
-		var cameraRenderParams : CameraRenderParams
-    }
-
-    func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CamSetup
+	struct CamSetup 
 	{
-		let sf = Float(getDownscaleFactor(step))
+		var intrinsics: CameraIntrinsics
+		var degree: Int
+		var degreesToUse: Int
+		var tileBounds: (Int, Int, Int)
+		var camPos: simd_float3	{	cameraRenderParams.camPos	}
+		var cameraRenderParams : CameraRenderParams
+	}
+
+	func prepareCam(_ cam: RuntimeCamera, step: Int) throws -> CamSetup
+	{
+		let sf = Float(1.0)//Float(getDownscaleFactor(step))
 		
 		// Scale intrinsics by downscale factor
 		let intrinsics = cam.meta.intrinsics.scaled(by: sf)
 		
 		//	need to remake cache
-		let cameraRenderParams = try cam.meta.GetCameraRenderParams(metalContext: metalContext, fovX: intrinsics.fovX, fovY: intrinsics.fovY)
+		let cameraRenderParams = try cam.meta.GetCameraRenderParams(metalContext: metalContext, cameraIntrinsics: intrinsics)
 
-        let b = featuresRest.size(-2) + 1
-        let degree = b <= 1 ? 0 : b <= 4 ? 1 : b <= 9 ? 2 : b <= 16 ? 3 : 4
-        let cachePos = cameraRenderParams.camPos
+		let b = featuresRest.size(-2) + 1
+		let degree = b <= 1 ? 0 : b <= 4 ? 1 : b <= 9 ? 2 : b <= 16 ? 3 : 4
 		
-        return CamSetup(
+		return CamSetup(
 			intrinsics: intrinsics,
-            degree: degree, degreesToUse: min(step / shDegreeInterval, shDegree),
-            tileBounds: ((intrinsics.width + BLOCK_X - 1) / BLOCK_X, (intrinsics.height + BLOCK_Y - 1) / BLOCK_Y, 1),
-			camPos: cachePos,
+			degree: degree, 
+			degreesToUse: min(step / shDegreeInterval, shDegree),
+			tileBounds: ((intrinsics.width + BLOCK_X - 1) / BLOCK_X, (intrinsics.height + BLOCK_Y - 1) / BLOCK_Y, 1),
 			cameraRenderParams: cameraRenderParams)
     }
 
     
 
-	private func renderParams(_ cam: RuntimeCamera, camSetup: CamSetup, channels: Int) -> RenderParams 
-	{
-		let cache = camSetup.cameraRenderParams
-        return RenderParams(
-            numPoints: means.size(0), means3d: means, scales: scales, globScale: 1.0,
-            quats: quats, 
-            viewmat: cache.viewMat.toFloat4x4(), 
-            projmat: cache.projViewMat.toFloat4x4(),
-            intrinsics: camSetup.intrinsics,
-            tileBounds: camSetup.tileBounds, clipThresh: 0.01,
-            degree: UInt32(camSetup.degree), degreesToUse: UInt32(camSetup.degreesToUse), camPos: camSetup.camPos,
-            featuresDc: featuresDc, featuresRest: featuresRest,
-			opacities: opacities, background: backgroundColor, channels: UInt32(channels))
-    }
+
 
     func render(_ cam: RuntimeCamera, step: Int, channels:Int) async throws -> MTensor 
 	{
-        let s = try prepareCam(cam, step: step)
-		return try await msplatRender(renderParams(cam, camSetup:s, channels: channels), metalContext)
+        let camSetup = try prepareCam(cam, step: step)
+		let cameraRenderParams = camSetup.cameraRenderParams
+		
+		let renderParams = GetRenderParams(camSetup: camSetup, channels: channels)
+		
+		return try await msplatRender(renderParams, metalContext)
     }
 
+	func GetSplatBuffers() -> SplatBuffers
+	{
+		.init(means3d: means, 
+			  scales: scales, 
+			  quats: quats, 
+			  featuresDc: featuresDc, 
+			  featuresRest: featuresRest, 
+			  opacities: opacities)
+	}
+	
+	func GetRenderParams(camSetup:CamSetup,channels:Int) -> RenderParams
+	{
+		let cameraRenderParams = camSetup.cameraRenderParams
+		
+		let splatBuffers = GetSplatBuffers()
+		
+		let renderParams = RenderParams(
+			numPoints: means.size(0),
+			splatBuffers:splatBuffers, 
+			globScale: 1.0,
+			viewmat: cameraRenderParams.viewMat.toFloat4x4(), 
+			projmat: cameraRenderParams.projViewMat.toFloat4x4(),
+			camPos: cameraRenderParams.camPos,
+			intrinsics: camSetup.intrinsics,
+			tileBounds: camSetup.tileBounds,
+			clipThresh: 0.01,
+			degree: UInt32(camSetup.degree), 
+			degreesToUse: UInt32(camSetup.degreesToUse),
+			background: backgroundColor, 
+			channels: UInt32(channels)
+		)
+		return renderParams
+	}
 	
 	func GetSplats() throws -> [PlySplatPoint]
 	{
@@ -808,9 +833,9 @@ final class Model
 	
 	func fullIteration(_ cam: RuntimeCamera, step: Int, gt: MTensor, ssimWeight: Float) async throws 
 	{
-        let s = try prepareCam(cam, step: step)
-        lastHeight = s.intrinsics.height
-		lastWidth = s.intrinsics.width
+        let camSetup = try prepareCam(cam, step: step)
+        lastHeight = camSetup.intrinsics.height
+		lastWidth = camSetup.intrinsics.width
         let numPoints = means.size(0)
 
         if !window2d.defined {
@@ -832,17 +857,56 @@ final class Model
         }
 
         let invMaxDim = 1.0 / Float(max(lastHeight, lastWidth))
-        let lossInvN = 1.0 / Float(s.intrinsics.height * s.intrinsics.width * 3)
+        let lossInvN = 1.0 / Float(camSetup.intrinsics.height * camSetup.intrinsics.width * 3)
 
 		let params = TrainParams(
-			gt: gt, window2d: window2d, ssimWeight: ssimWeight,
-			lossInvN: lossInvN, featuresRestBases: featuresRest.size(-2),
-			adamParams: paramViews, adamExpAvg: adamExpAvg, adamExpAvgSq: adamExpAvgSq,
-			adamStepSizes: stepSizes, adamBc2Sqrts: bc2Sqrts,
-			adamBeta1: adamBeta1, adamBeta2: adamBeta2, adamEps: adamEps,
-			visCounts: visCounts, xysGradNorm: xysGradNorm, max2dSize: max2DSize,
+			gt: gt,
+			window2d: window2d, 
+			ssimWeight: ssimWeight,
+			lossInvN: lossInvN, 
+			featuresRestBases: featuresRest.size(-2),
+			adamParams: paramViews, 
+			adamExpAvg: adamExpAvg, 
+			adamExpAvgSq: adamExpAvgSq,
+			adamStepSizes: stepSizes,
+			adamBc2Sqrts: bc2Sqrts,
+			adamBeta1: adamBeta1, 
+			adamBeta2: adamBeta2, 
+			adamEps: adamEps,
+			visCounts: visCounts, 
+			xysGradNorm: xysGradNorm, 
+			max2dSize: max2DSize,
 			invMaxDim: invMaxDim)
-		let (r, _) = try await msplatTrainStep(renderParams(cam, camSetup: s, channels: 3), params, metalContext)
+
+		let renderChannels = 3
+		let renderParams = GetRenderParams(camSetup: camSetup, channels: renderChannels)
+		/*
+		let renderParams = RenderParams(
+			numPoints: means.size(0), 
+			means3d: means, 
+			scales: scales, 
+			globScale: 1.0,
+			quats: quats,
+			viewmat: viewMatrix,
+			projmat: projViewMatrix,  // Combined projection×view matrix!
+			
+			//viewmat: cache.viewMat.toFloat4x4(), 
+			//projmat: cache.projViewMat.toFloat4x4(),
+			intrinsics: camSetup.intrinsics,
+			tileBounds: camSetup.tileBounds,
+			clipThresh: 0.01,
+			degree: UInt32(camSetup.degree), 
+			degreesToUse: UInt32(camSetup.degreesToUse),
+			camPos: cameraRenderParams.camPos,
+			featuresDc: featuresDc,
+			featuresRest: featuresRest,
+			opacities: opacities,
+			background: backgroundColor, 
+			channels: UInt32(channels)
+		)
+		let renderParams = RenderParams(cam, camSetup: s, channels: 3), params, metalContext)
+		*/
+		let (r, _) = try await msplatTrainStep(renderParams, params, metalContext)
         radii = r
     }
     
@@ -897,7 +961,6 @@ final class Model
         breakdown.trainingState += radii.nbytes
         
         // Other
-        breakdown.other += backgroundColor.nbytes
         breakdown.other += window2d.nbytes
         
         return breakdown
