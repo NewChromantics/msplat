@@ -623,26 +623,23 @@ kernel void nd_rasterize_forward_kernel(
         }
     }
 
-    if (inside) 
+	if (inside) 
 	{
-        final_Ts[pix_id] = T;
-        final_index[pix_id] = last_contributor;
-        // Fused clamp_max(output, 1.0) — saturate clamps to [0,1]
-        float3 bg = {background[0], background[1], background[2]};
-        float3 final_rgb = saturate(fma(bg, T, pix_out));
-        out_img[channels * pix_id + 0] = final_rgb.x;
-        out_img[channels * pix_id + 1] = final_rgb.y;
-        out_img[channels * pix_id + 2] = final_rgb.z;
-        
+		final_Ts[pix_id] = T;
+		final_index[pix_id] = last_contributor;
+		// Fused clamp_max(output, 1.0) — saturate clamps to [0,1]
+		float3 bg = background;
+		float3 final_rgb = saturate(fma(bg, T, pix_out));
+		out_img[channels * pix_id + 0] = final_rgb.x;
+		out_img[channels * pix_id + 1] = final_rgb.y;
+		out_img[channels * pix_id + 2] = final_rgb.z;
+		
 		//	write an alpha
 		if (channels == 4) 
 		{
 			out_img[channels * pix_id + 3] = 1.0f - T;  // Alpha = 1 - transmittance
-			
-			//	T is obscuring output...
-			out_img[channels * pix_id + 3] = 1.0f;
-        }
-    }
+		}
+	}
 }
 
 void sh_coeffs_to_color(
