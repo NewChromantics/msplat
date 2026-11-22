@@ -254,6 +254,7 @@ struct ContentView: View
 		// For now, since we don't know the exact structure of CameraState,
 		// we can try to construct it with the transform directly if supported:
 		self.splatSceneCameraState = newCameraState
+		//self.splatSceneCameraState.overridingLocalToWorldTransform = cameraMeta.camToWorld.transpose
 		
 		// Debug output to help verify the values
 		print("Camera Pose Copied:")

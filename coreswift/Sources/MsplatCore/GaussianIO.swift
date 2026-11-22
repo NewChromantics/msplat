@@ -11,83 +11,6 @@ struct GaussianParams {
     var keepCrs: Bool
 }
 
-private func writeData(_ data: Data, to path: String) throws {
-    do { try data.write(to: URL(fileURLWithPath: path)) }
-    catch { throw MsplatError("Cannot write \(path): \(error.localizedDescription)") }
-}
-
-func saveGaussianPly(_ path: String, _ p: GaussianParams, step: Int) throws 
-{
-	throw MsplatError("save-ply should be grabbing a state")
-	//  msplatGpuSync()
-
-    let N = p.means.size(0)
-    let numDc = p.featuresDc.size(1)
-    let frBases = p.featuresRest.size(-2)
-    let numFr = frBases * 3
-
-    var header = "ply\nformat binary_little_endian 1.0\n"
-    header += "comment msplat v\(step)\n"
-    header += "element vertex \(N)\n"
-    header += "property float x\nproperty float y\nproperty float z\n"
-    header += "property float nx\nproperty float ny\nproperty float nz\n"
-    for i in 0..<numDc { header += "property float f_dc_\(i)\n" }
-    for i in 0..<numFr { header += "property float f_rest_\(i)\n" }
-    header += "property float opacity\n"
-    header += "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
-    header += "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
-    header += "end_header\n"
-
-    let floatsPerRow = 3 + 3 + numDc + numFr + 1 + 3 + 4
-    var body = [Float](repeating: 0, count: N * floatsPerRow)
-    let mp = p.means.floats()
-	let sp = p.scales.floats()
-	let qp = p.quats.floats()
-    let dp = p.featuresDc.floats()
-	let op = p.opacities.floats() 
-	let frp = p.featuresRest.floats()
-    let tr = [p.translation.0, p.translation.1, p.translation.2]
-
-    body.withUnsafeMutableBufferPointer 
-	{
-		out in
-        for i in 0..<N 
-		{
-            var c = i * floatsPerRow
-            for j in 0..<3 
-			{
-                out[c] = p.keepCrs ? (mp[i * 3 + j] / p.scale + tr[j]) : mp[i * 3 + j]
-				c += 1
-            }
-            c += 3 // normals = 0
-            for j in 0..<numDc 
-			{
-				out[c] = dp[i * numDc + j]; 
-				c += 1 
-			}
-            // Transpose [frBases, 3] → [3, frBases] for PLY convention
-            for ch in 0..<3 
-			{
-                for b in 0..<frBases { out[c] = frp[i * frBases * 3 + b * 3 + ch]; c += 1 }
-            }
-            out[c] = op[i]
-			c += 1
-            for j in 0..<3 
-			{
-                out[c] = p.keepCrs ? logf(expf(sp[i * 3 + j]) / p.scale) : sp[i * 3 + j]; c += 1
-            }
-            for j in 0..<4 
-			{
-				out[c] = qp[i * 4 + j]
-				c += 1 
-			}
-        }
-    }
-
-    var data = Data(header.utf8)
-    body.withUnsafeBytes { data.append(contentsOf: $0) }  // little-endian host
-    try writeData(data, to: path)
-}
 
 
 @inline(__always)
@@ -96,50 +19,6 @@ func clampToUInt8(_ v: Float) -> UInt8 {
 	return UInt8(min(max(v, 0), 255))
 }
 
-func saveGaussianSplat(_ path: String, _ p: GaussianParams) throws {
- 
-    let N = p.means.size(0)
-    let mp = p.means.floats(), sp = p.scales.floats(), qp = p.quats.floats()
-    let dp = p.featuresDc.floats(), op = p.opacities.floats()
-    let tr = [p.translation.0, p.translation.1, p.translation.2]
-
-    // Sort by size × opacity, largest first
-    var order = [Float](repeating: 0, count: N)
-    for i in 0..<N {
-        var s = expf(sp[i * 3]) + expf(sp[i * 3 + 1]) + expf(sp[i * 3 + 2])
-        if p.keepCrs { s /= p.scale }
-        order[i] = s / (1.0 + expf(-op[i]))
-    }
-    let idx = (0..<N).sorted { order[$0] > order[$1] }
-
-    let rowBytes = 32 // 3f pos + 3f scale + 4B rgba + 4B quat
-    var out = Data(count: N * rowBytes)
-    out.withUnsafeMutableBytes { raw in
-        let base = raw.baseAddress!
-        for (row, i) in idx.enumerated() {
-            let r = base.advanced(by: row * rowBytes)
-            for j in 0..<3 {
-                let m = p.keepCrs ? (mp[i * 3 + j] / p.scale + tr[j]) : mp[i * 3 + j]
-                r.storeBytes(of: m.bitPattern.littleEndian, toByteOffset: j * 4, as: UInt32.self)
-            }
-            for j in 0..<3 {
-                let s = p.keepCrs ? (expf(sp[i * 3 + j]) / p.scale) : expf(sp[i * 3 + j])
-                r.storeBytes(of: s.bitPattern.littleEndian, toByteOffset: 12 + j * 4, as: UInt32.self)
-            }
-            for j in 0..<3 {
-                let v = (Double(dp[i * 3 + j]) * C0 + 0.5) * 255.0
-                let b: UInt8 = v.isNaN ? 0 : UInt8(min(max(v, 0.0), 255.0))
-                r.storeBytes(of: b, toByteOffset: 24 + j, as: UInt8.self)
-            }
-            let sig = 1.0 / (1.0 + expf(-op[i]))
-            r.storeBytes(of: clampToUInt8(sig * 255.0), toByteOffset: 27, as: UInt8.self)
-            for j in 0..<4 {
-                r.storeBytes(of: clampToUInt8(qp[i * 4 + j] * 128.0 + 128.0), toByteOffset: 28 + j, as: UInt8.self)
-            }
-        }
-    }
-    try writeData(out, to: path)
-}
 
 struct LoadedGaussians {
     var means: MTensor, scales: MTensor, quats: MTensor

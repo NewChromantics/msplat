@@ -36,8 +36,12 @@ public struct PlySplatPoint : Sendable, Equatable
 	public var scale : simd_float3			{	simd_float3( exp(scaleLog.x), exp(scaleLog.y), exp(scaleLog.z) )	}
 	public var opacityLogit : Float
 	public var opacity : Float				{	1 / (1 + exp(-opacityLogit))	}
-	public var shDc : simd_float3
 	public var colour : simd_float3		{	simd_clamp( 0.5 + 0.28209479 * shDc, simd_float3(repeating: 0), simd_float3(repeating: 1) )	}
+
+	public var shDc : simd_float3
+	public var dcCount : Int			{	3	}	//	let numDc = p.featuresDc.size(1)
+	
+	public var featureRestBases : Int	{	0	}	//	let frBases = p.featuresRest.size(-2)
 }
 
 
@@ -335,9 +339,6 @@ public final class SplatTrainer {
         
         return (w, h)
     }
-
-    public func exportPly(to path: String) throws { try model.savePly(path, step: currentStep) }
-    public func exportSplat(to path: String) throws { try model.saveSplat(path) }
 
     /// Save full training state (params + optimizer) for resume.
     public func saveCheckpoint(to path: String) throws {

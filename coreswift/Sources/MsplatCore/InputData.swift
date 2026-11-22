@@ -7,7 +7,7 @@ import simd
 import SwiftUI
 
 /// Image source for camera metadata
-public enum ImageSource 
+public enum ImageSource : Sendable
 {
 	case url(URL)
 	case data(RGBImage)

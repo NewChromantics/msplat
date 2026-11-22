@@ -593,20 +593,6 @@ final class Model
                        scale: scale, translation: translation, keepCrs: keepCrs)
     }
 
-    func save(_ filename: String, step: Int) throws {
-        if (filename as NSString).pathExtension == "splat" { try saveSplat(filename) }
-        else { try savePly(filename, step: step) }
-        logErr("Saved \(filename)")
-    }
-
-    func savePly(_ filename: String, step: Int) throws {
-        try saveGaussianPly(filename, gaussianParams, step: step)
-    }
-
-    func saveSplat(_ filename: String) throws {
-        try saveGaussianSplat(filename, gaussianParams)
-    }
-
     func loadPly(_ filename: String) throws -> Int {
         let g = try loadGaussianPly(filename, scale: scale, translation: translation, keepCrs: keepCrs, metalContext: metalContext)
         means = g.means

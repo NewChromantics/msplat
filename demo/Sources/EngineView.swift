@@ -34,11 +34,38 @@ struct PopupErrorView : View
 	}
 }
 
+import ModelIO
+import UniformTypeIdentifiers
+extension UTType 
+{
+	static let ply = UTType(importedAs: kUTTypePolygon)
+}
+
+struct PlyFile: Transferable 
+{
+	let data: Data
+	static var transferRepresentation: some TransferRepresentation 
+	{
+		DataRepresentation(exportedContentType: .ply) { $0.data }
+	}
+}
+
 struct EngineStateView : View 
 {
 	var engine : Engine
 	@State var controlError : ErrorWithIdentifier?
 	var OnClickedSetSplatPose : (CameraMeta)->Void
+	
+	//	sits here to instigate export dialog
+	@State var exportedPlyData : Data?
+	var plyData : PlyFile?		{	exportedPlyData.map{ PlyFile(data: $0) }	}
+	var exportingPlyData : Binding<Bool> 
+	{
+		Binding(
+			get: { exportedPlyData != nil },
+			set: { if !$0 { exportedPlyData = nil } }
+		)
+	}
 	
 	var body: some View 
 	{
@@ -154,6 +181,15 @@ struct EngineStateView : View
 		{
 			PopupErrorView(error:$0.error)
 		}
+		.fileExporter(isPresented: exportingPlyData,item: plyData,defaultFilename: "export")
+		{
+			switch $0
+			{
+				case .failure(let error):	controlError = ErrorWithIdentifier(error: error)
+				default:
+					break
+			}
+		}
 	}
 
 	@ViewBuilder func RenderedImage(imageAndMeta:(image:CGImage,meta:CameraMeta)?) -> some View
@@ -190,7 +226,7 @@ struct EngineStateView : View
 	{
 		RunAsync
 		{
-			throw AppError("todo: export")
+			self.exportedPlyData = try await engine.splats.ExportPly(transform: .identity)
 		}
 	}
 	
