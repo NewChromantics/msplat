@@ -13,8 +13,8 @@ extension CameraMeta
 	//	so its the length of... why penultimate?...
 	public func GetCameraRenderParams(metalContext:MetalContext,cameraIntrinsics:CameraIntrinsics,shDegrees:Int,shDegreesToUse:Int) throws -> CameraRenderParams 
 	{
-		let fovX = intrinsics.fovX
-		let fovY = intrinsics.fovY
+		let worldNearZ : Float = 0.001
+		let worldFarZ : Float = 1000.0
 		let d = self.camToWorld
 		
 		// Extract rotation (flip Y and Z for OpenGL to view space conversion)
@@ -50,10 +50,10 @@ extension CameraMeta
 		]
 		
 		// Build projection matrix
-		let tP = 0.001 * tanf(0.5 * fovY)
-		let rP = 0.001 * tanf(0.5 * fovX)
-		let zf: Float = 1000.0
-		let zn: Float = 0.001
+		let tP = 0.001 * tanf(0.5 * intrinsics.fovY)
+		let rP = 0.001 * tanf(0.5 * intrinsics.fovX)
+		let zf: Float = worldFarZ
+		let zn: Float = worldNearZ
 		
 		let projectionMatrix: [Float] = [
 			zn / rP, 0, 0, 0,
@@ -62,35 +62,20 @@ extension CameraMeta
 			0, 0, 1, 0,
 		]
 		
-		// Convert viewMatrix array to simd_float4x4
 		let viewMat = simd_float4x4(colMajor:viewMatrix)
-	
-		
-		// Compute projection * view matrix
-		var pvm = [Float](repeating: 0, count: 16)
-		for i in 0..<4 {
-			for j in 0..<4 {
-				for k in 0..<4 {
-					pvm[i * 4 + j] += projectionMatrix[i * 4 + k] * viewMatrix[k * 4 + j]
-				}
-			}
-		}
-		
+		let projectionMat = simd_float4x4(colMajor:projectionMatrix)
 		
 		let tileBounds = ((intrinsics.width + BLOCK_X - 1) / BLOCK_X, (intrinsics.height + BLOCK_Y - 1) / BLOCK_Y, 1)
 
 		
-		var cameraRenderParams = CameraRenderParams(degrees:shDegrees,
+		let cameraRenderParams = CameraRenderParams(degrees:shDegrees,
 													degreesToUse: shDegreesToUse, 
 													tileBounds:tileBounds, 
 													intrinsics: cameraIntrinsics,
 													viewMat: viewMat,
+													projectionMatrix: projectionMat,
 													camToWorld: self.camToWorld)
 		
-		// Convert pvm array to simd_float4x4
-		cameraRenderParams.projViewMat = simd_float4x4(colMajor:pvm)
-		cameraRenderParams.fovX = fovX
-		cameraRenderParams.fovY = fovY
 		return cameraRenderParams
 	}
 }

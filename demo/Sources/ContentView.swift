@@ -95,8 +95,7 @@ struct ContentView: View
 		.overlay(alignment: .topTrailing) 
 		{
 			// Memory usage overlay in top-right corner
-			MemoryOverlay()
-				.padding(16)
+			//MemoryOverlay().padding(16)
 		}
 	}
 	

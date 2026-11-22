@@ -93,21 +93,14 @@ public struct CameraRenderParams
 	public var tileBounds: (Int, Int, Int)
 	public var intrinsics : CameraIntrinsics
 	public var viewMat : simd_float4x4		//	world to camera <--- gr: apparently, but isnt matching camToWorld
+	public var projectionMatrix : simd_float4x4
+	public var projViewMat : simd_float4x4	{	viewMat * projectionMatrix	}
 	public var camToWorld : simd_float4x4
-	public var projViewMat = simd_float4x4()		//	projection * view
-	public var camPos: simd_float3	{	camToWorld.transpose.columns.3.xyz	}
-	public var fovX: Float = 0
-	public var fovY: Float = 0
+	public var camPos: simd_float3			{	camToWorld.transpose.columns.3.xyz	}
+	public var fovX: Float					{	intrinsics.fovX	}
+	public var fovY: Float					{	intrinsics.fovY	}
 
 	public var isDefined: Bool { fovX != 0 && fovY != 0 }
-
-	public mutating func clear() 
-	{
-        viewMat = simd_float4x4()
-        projViewMat = simd_float4x4()
-        fovX = 0
-        fovY = 0
-    }
     
 	public var gpuMemoryUsage: Int {
         0  // No GPU memory used anymore since we store matrices as SIMD types
