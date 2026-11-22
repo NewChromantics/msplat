@@ -392,7 +392,7 @@ public final class MetalContext : @unchecked Sendable
 		}
 		cb.commit()
 		let stats = try await promise.value
-		print("\(jobName) took \(stats.gpuExecutionDurationMs)ms (\(stats.gpuScheduleDurationMs)ms setup)")
+		//print("\(jobName) took \(stats.gpuExecutionDurationMs)ms (\(stats.gpuScheduleDurationMs)ms setup)")
 		return stats
 	}
 

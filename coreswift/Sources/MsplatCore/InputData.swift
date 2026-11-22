@@ -23,7 +23,8 @@ public enum ImageSource
 }
 
 /// Lens distortion parameters (Brown-Conrady model)
-public struct DistortionParams {
+public struct DistortionParams : Sendable
+{
     public var k1: Float = 0  // radial distortion coefficient 1
     public var k2: Float = 0  // radial distortion coefficient 2
     public var k3: Float = 0  // radial distortion coefficient 3
@@ -46,28 +47,34 @@ public struct DistortionParams {
 
 /// Camera metadata: fixed data loaded from dataset (intrinsics, pose, dimensions).
 /// Value type for camera parameters.
-public struct CameraMeta 
+public struct CameraMeta : Sendable
 {
     public var intrinsics: CameraIntrinsics
     public var distortion: DistortionParams
     /// 4x4 camera-to-world transform (OpenGL: Y-up, Z-back).
-	public var camToWorld: simd_float4x4 = matrix_identity_float4x4
+	public var camToWorld: simd_float4x4
 	public var imageSource: ImageSource
     
-    public init(imageSource: ImageSource) {
+	/*
+    public init(imageSource: ImageSource) 
+	{
         self.imageSource = imageSource
         self.intrinsics = CameraIntrinsics(fx: 0, fy: 0, cx: 0, cy: 0, width: 0, height: 0)
         self.distortion = DistortionParams()
-    }
+    }*/
     
-    public init(imageSource: ImageSource, intrinsics: CameraIntrinsics, distortion: DistortionParams = DistortionParams()) {
+	public init(imageSource: ImageSource, intrinsics: CameraIntrinsics, distortion: DistortionParams?,camToWorld:simd_float4x4) 
+	{
         self.imageSource = imageSource
         self.intrinsics = intrinsics
-        self.distortion = distortion
+		self.distortion = distortion ?? .init()
+		self.camToWorld = camToWorld
+		
     }
     
     // Convenience accessors for width/height only
-    public var width: Int {
+    public var width: Int 
+	{
         get { intrinsics.width }
         set { intrinsics.width = newValue }
     }

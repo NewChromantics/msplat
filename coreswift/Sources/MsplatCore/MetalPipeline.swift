@@ -62,7 +62,8 @@ extension MTLBlitCommandEncoder {
 // MARK: - Shared parameters
 
 /// Camera intrinsics parameters
-public struct CameraIntrinsics {
+public struct CameraIntrinsics : Sendable 
+{
     public var fx: Float
     public var fy: Float
     public var cx: Float
@@ -397,7 +398,7 @@ extension MTLCommandQueue {
         cb.commit()
         
         let stats = try await promise.value
-        print("\(jobName) took \(stats.gpuExecutionDurationMs)ms (\(stats.gpuScheduleDurationMs)ms setup)")
+        //print("\(jobName) took \(stats.gpuExecutionDurationMs)ms (\(stats.gpuScheduleDurationMs)ms setup)")
         return stats
     }
 }

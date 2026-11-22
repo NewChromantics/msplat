@@ -5,23 +5,96 @@ import PolycamData
 import simd
 
 
+extension PolycamCamera
+{
+	var intrinsics : CameraIntrinsics
+	{
+		.init(	fx: fx, 
+				fy: fy, 
+				cx: cx, 
+				cy: cy, 
+				width: width, 
+				height: height
+		)
+	}
+	
+	var distortionParams : DistortionParams
+	{
+		.init(
+			k1: k1,
+			k2: k2,
+			//k3: k3,
+			//k4: k4,
+			p1: p1,
+			p2: p2
+		)
+		
+	}
+}
+
+extension ColmapCameraWithTransform
+{
+	var intrinsics : CameraIntrinsics
+	{
+		.init(	fx: fx, 
+				fy: fy, 
+				cx: cx, 
+				cy: cy, 
+				width: width, 
+				height: height
+		)
+	}
+	
+	var distortionParams : DistortionParams
+	{
+		.init(
+			k1: k1,
+			k2: k2,
+			k3: k3,
+			/*k4: k4,*/// k4 is ignored - not supported by our distortion model
+			p1: p1,
+			p2: p2
+		)
+		
+	}
+}
+
+extension NerfStudioCamera
+{
+	var intrinsics : CameraIntrinsics
+	{
+		.init(	fx: fx, 
+				fy: fy, 
+				cx: cx, 
+				cy: cy, 
+				width: width, 
+				height: height
+		)
+	}
+	
+	var distortionParams : DistortionParams
+	{
+		// Map distortion parameters (NerfStudio uses k1-k4, p1-p2; we use k1-k3, p1-p2)
+		.init(
+			k1: k1,
+			k2: k2,
+			k3: k3,
+			/*k4: k4,*/// k4 is ignored - not supported by our distortion model
+			p1: p1,
+			p2: p2
+			)
+		
+	}
+}
+
+
 /// Convert a 16-element Float array (row-major) to simd_float4x4 (column-major).
 /// This handles the conversion from the typical row-major format used in JSON files
 /// to the column-major format used by SIMD types.
-private func arrayToMatrix4x4(_ array: [Float]) -> simd_float4x4 {
-	guard array.count == 16 else {
-		// Return identity matrix if array is invalid
-		return matrix_identity_float4x4
-	}
-	
-	// Array is in row-major order: [m00, m01, m02, m03, m10, m11, m12, m13, ...]
-	// simd_float4x4 expects column-major, so we need to transpose
-	return simd_float4x4(
-		simd_float4(array[0], array[4], array[8],  array[12]),  // column 0
-		simd_float4(array[1], array[5], array[9],  array[13]),  // column 1
-		simd_float4(array[2], array[6], array[10], array[14]),  // column 2
-		simd_float4(array[3], array[7], array[11], array[15])   // column 3
-	)
+@available(*, deprecated, renamed: "simd_float4x4(rowMajor:)", message: "use constructor")
+private func arrayToMatrix4x4(_ array: [Float]) -> simd_float4x4 
+{
+	return simd_float4x4(rowMajor: array)
 }
 
 
@@ -90,27 +163,11 @@ extension NerfstudioDatasetSource : SplatDatasetSource
 		let inputData = InputData()
 		
 		// Convert cameras
-		for nerfCamera in nerfDataset.cameras {
-			var cameraMeta = CameraMeta(imageSource: .url(
-				nerfDataset.baseDirectory.appendingPathComponent(nerfCamera.imagePath)
-			))
-			
-			cameraMeta.intrinsics.width = nerfCamera.width
-			cameraMeta.intrinsics.height = nerfCamera.height
-			cameraMeta.intrinsics.fx = nerfCamera.fx
-			cameraMeta.intrinsics.fy = nerfCamera.fy
-			cameraMeta.intrinsics.cx = nerfCamera.cx
-			cameraMeta.intrinsics.cy = nerfCamera.cy
-			
-			// Map distortion parameters (NerfStudio uses k1-k4, p1-p2; we use k1-k3, p1-p2)
-			cameraMeta.distortion.k1 = nerfCamera.k1
-			cameraMeta.distortion.k2 = nerfCamera.k2
-			cameraMeta.distortion.k3 = nerfCamera.k3  // k4 is ignored - not supported by our distortion model
-			cameraMeta.distortion.p1 = nerfCamera.p1
-			cameraMeta.distortion.p2 = nerfCamera.p2
-			
-			// Convert transform matrix from [Float] array to simd_float4x4 (column-major)
-			cameraMeta.camToWorld = arrayToMatrix4x4(nerfCamera.transformMatrix)
+		for nerfCamera in nerfDataset.cameras 
+		{
+			let imageSource = ImageSource.url(nerfDataset.baseDirectory.appendingPathComponent(nerfCamera.imagePath))
+			let camToWorld = simd_float4x4(rowMajor: nerfCamera.transformMatrix)
+			let cameraMeta = CameraMeta(imageSource:imageSource, intrinsics: nerfCamera.intrinsics, distortion: nerfCamera.distortionParams, camToWorld:camToWorld)
 			
 			inputData.cameras.append(cameraMeta)
 		}
@@ -168,24 +225,9 @@ extension ColmapDatasetSource: SplatDatasetSource
 		// Convert cameras
 		for colmapCamera in colmapDataset.cameras 
 		{
-			var cameraMeta = CameraMeta(imageSource: .url(colmapCamera.imagePath))
-			
-			cameraMeta.intrinsics.width = colmapCamera.width
-			cameraMeta.intrinsics.height = colmapCamera.height
-			cameraMeta.intrinsics.fx = colmapCamera.fx
-			cameraMeta.intrinsics.fy = colmapCamera.fy
-			cameraMeta.intrinsics.cx = colmapCamera.cx
-			cameraMeta.intrinsics.cy = colmapCamera.cy
-			
-			// Map distortion parameters
-			cameraMeta.distortion.k1 = colmapCamera.k1
-			cameraMeta.distortion.k2 = colmapCamera.k2
-			cameraMeta.distortion.k3 = colmapCamera.k3
-			cameraMeta.distortion.p1 = colmapCamera.p1
-			cameraMeta.distortion.p2 = colmapCamera.p2
-			
-			// Convert transform matrix from [Float] array to simd_float4x4 (column-major)
-			cameraMeta.camToWorld = simd_float4x4(colMajor: colmapCamera.transformMatrix)
+			let imageSource = ImageSource.url(colmapCamera.imagePath)
+			let camToWorld = simd_float4x4(colMajor: colmapCamera.transformMatrix)
+			let cameraMeta = CameraMeta(imageSource:imageSource, intrinsics: colmapCamera.intrinsics, distortion: colmapCamera.distortionParams, camToWorld: camToWorld)
 			
 			inputData.cameras.append(cameraMeta)
 		}
@@ -241,27 +283,11 @@ extension PolycamDatasetSource: SplatDatasetSource
 		let inputData = InputData()
 		
 		// Convert cameras
-		for polycamCamera in polycamDataset.cameras {
-			var cameraMeta = CameraMeta(imageSource: .url(
-				polycamDataset.baseDirectory.appendingPathComponent(polycamCamera.imagePath)
-			))
-			
-			cameraMeta.intrinsics.width = polycamCamera.width
-			cameraMeta.intrinsics.height = polycamCamera.height
-			cameraMeta.intrinsics.fx = polycamCamera.fx
-			cameraMeta.intrinsics.fy = polycamCamera.fy
-			cameraMeta.intrinsics.cx = polycamCamera.cx
-			cameraMeta.intrinsics.cy = polycamCamera.cy
-			
-			// Map distortion parameters (Polycam uses k1, k2, p1, p2)
-			cameraMeta.distortion.k1 = polycamCamera.k1
-			cameraMeta.distortion.k2 = polycamCamera.k2
-			cameraMeta.distortion.k3 = 0  // Not provided by Polycam
-			cameraMeta.distortion.p1 = polycamCamera.p1
-			cameraMeta.distortion.p2 = polycamCamera.p2
-			
-			// Convert transform matrix from [Float] array to simd_float4x4 (column-major)
-			cameraMeta.camToWorld = arrayToMatrix4x4(polycamCamera.transformMatrix)
+		for polycamCamera in polycamDataset.cameras 
+		{
+			let imageSource = ImageSource.url(polycamDataset.baseDirectory.appendingPathComponent(polycamCamera.imagePath))
+			let camToWorld = simd_float4x4(rowMajor:polycamCamera.transformMatrix)
+			let cameraMeta = CameraMeta(imageSource:imageSource, intrinsics: polycamCamera.intrinsics, distortion: polycamCamera.distortionParams, camToWorld: camToWorld)
 			
 			inputData.cameras.append(cameraMeta)
 		}
@@ -280,19 +306,4 @@ extension PolycamDatasetSource: SplatDatasetSource
 	}
 }
 
-extension PolycamIntrinsics
-{
-	/// Convert to CameraMeta, applying defaults where needed
-	func toCameraMeta(imageSource: ImageSource) -> CameraMeta {
-		var meta = CameraMeta(imageSource: imageSource)
-		let w = width ?? 0
-		let h = height ?? 0
-		meta.intrinsics.width = w
-		meta.intrinsics.height = h
-		meta.intrinsics.fx = Float(fx ?? 0)
-		meta.intrinsics.fy = Float(fy ?? 0)
-		meta.intrinsics.cx = Float(cx ?? Double(w) / 2.0)
-		meta.intrinsics.cy = Float(cy ?? Double(h) / 2.0)
-		return meta
-	}
-}
+
