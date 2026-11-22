@@ -2,6 +2,23 @@ import SwiftUI
 import MsplatCore
 import QuartzCore
 import SplatScene
+import simd
+
+
+
+
+struct SplatArrayStatsView : View 
+{
+	var splats : [PlySplatPoint] = []
+	
+	var body: some View 
+	{
+		VStack
+		{
+			Text("\(splats.count) splats")
+		}
+	}
+}
 
 
 
@@ -10,7 +27,7 @@ struct ContentView: View
 	@State var engine : Engine
 	@State private var showDetailedMemory = true
 	
-	
+	@State var splatSceneCameraState = SplatScene.CameraState()
 	@State var scene : SplatScene.Scene = GetInitialScene()
 	@State var assetManager = AssetManager()
 	@State var renderStats = RenderStats()
@@ -35,7 +52,7 @@ struct ContentView: View
 			switch engine.phase
 			{
 				case .loading(let name,let url):	LoadingView(name: name, url:url)
-				case .training, .orbiting:			TrainingView()
+				case .training, .finished:			TrainingView()
 				case .error(let error):				ErrorView(error: error)
 			}
 		}
@@ -44,60 +61,6 @@ struct ContentView: View
 			old,new in
 			OnEngineSplatsChanged(points:new)
 		}
-	}
-	
-	private var progressBar: some View {
-		let progress = Double(engine.iteration) / Double(engine.totalIterations)
-		return GeometryReader { geo in
-			ZStack(alignment: .leading) {
-				Rectangle()
-					.fill(.white.opacity(0.15))
-				Rectangle()
-					.fill(
-						LinearGradient(
-							colors: [Color(red: 0.2, green: 0.5, blue: 1.0),
-									 Color(red: 0.0, green: 0.9, blue: 0.7)],
-							startPoint: .leading, endPoint: .trailing
-						)
-					)
-					.frame(width: geo.size.width * progress)
-					.animation(.linear(duration: 0.1), value: progress)
-			}
-		}
-		.frame(height: 6)
-	}
-	
-	private var statsBar: some View {
-		HStack(spacing: 32) {
-			switch engine.phase 
-			{
-				case .loading:
-					Text("Loading...")
-				case .error(let error):
-					Text("Error: \(error.localizedDescription)")
-				case .training:
-					Text("step \(engine.iteration) / \(engine.totalIterations)")
-					Text("\(fmtCount(engine.splatCount)) splats")
-					Text(String(format: "%.1f ms/step", engine.msPerStep))
-					Text("Elapsed \(Int(engine.elapsedSecs))secs")
-					Text(String(format: "GPU: %.0f MB", engine.memory.totalMB))
-						.foregroundStyle(memoryColor.opacity(0.9))
-				case .orbiting:
-					Text("\(fmtCount(engine.splatCount)) splats")
-					Text(String(format: "%.0f fps", engine.fps))
-			}
-		}
-		.font(.system(size: 18, weight: .semibold, design: .monospaced))
-		.foregroundStyle(.white)
-		.frame(maxWidth: .infinity)
-		.padding(.vertical, 14)
-		.background(.black.opacity(0.85))
-	}
-	
-	private func fmtCount(_ n: Int) -> String {
-		if n >= 1_000_000 { return String(format: "%.2fM", Double(n) / 1_000_000) }
-		if n >= 1_000 { return String(format: "%.0fK", Double(n) / 1_000) }
-		return "\(n)"
 	}
 	
 	
@@ -128,11 +91,6 @@ struct ContentView: View
 		VStack(spacing: 0) 
 		{
 			Spacer()
-			
-			progressBar
-			
-			// Full-width stats bar
-			statsBar
 		}
 		.overlay(alignment: .topTrailing) 
 		{
@@ -189,15 +147,7 @@ struct ContentView: View
 	{
 		MemoryStats()
 			.padding(12)
-			.background {
-				RoundedRectangle(cornerRadius: 8)
-					.fill(.black.opacity(0.75))
-					.overlay {
-						RoundedRectangle(cornerRadius: 8)
-							.strokeBorder(memoryColor.opacity(0.3), lineWidth: 1)
-					}
-			}
-		
+			.darkBackground()
 	}
 	
 	private var memoryColor: Color {
@@ -227,29 +177,6 @@ struct ContentView: View
 					  engine.memory.modelMB, engine.memory.datasetMB, engine.memory.cpuImagesMB, kbPerSplat)
 	}
 	
-	@ViewBuilder func OrbitingView() -> some View
-	{
-		// Prominent FPS counter top-right during orbit
-		TrainingView()
-			.overlay
-		{
-			VStack {
-				HStack {
-					Spacer()
-					Text(String(format: "%.0f FPS", engine.fps))
-						.font(.system(size: 36, weight: .bold, design: .monospaced))
-						.foregroundStyle(.white)
-						.padding(.horizontal, 20)
-						.padding(.vertical, 10)
-						.background(.black.opacity(0.7))
-						.cornerRadius(12)
-						.padding(20)
-				}
-				Spacer()
-			}
-		}
-	}
-	
 	
 	static func GetInitialScene() -> SplatScene.Scene
 	{
@@ -263,28 +190,77 @@ struct ContentView: View
 	{
 		HSplitView
 		{
-			VStack
-			{
-				if let img = engine.trainerRenderedImage 
-				{
-					Image(nsImage: NSImage(cgImage: img, size: img.size))
-						.resizable()
-						.aspectRatio(contentMode: .fit)
-						.frame(minWidth: 300,maxWidth: 500,maxHeight: .infinity)
-				}
-				if let img = engine.trainerRenderedImage2
-				{
-					Image(nsImage: NSImage(cgImage: img, size: img.size))
-						.resizable()
-						.aspectRatio(contentMode: .fit)
-						.frame(minWidth: 300,maxWidth: 500,maxHeight: .infinity)
-				}
-			}
-			.frame(maxWidth: .infinity,maxHeight: .infinity)
+			EngineStateView(engine: engine, OnClickedSetSplatPose:SetSplatPose)
+				.frame(maxWidth: .infinity,maxHeight: .infinity)
 			
-			SplatSceneView(scene: scene, renderStats: $renderStats, renderer: .metal, assetManager:assetManager)
+			SplatSceneView(scene: scene, renderStats: $renderStats, renderer: .metal, assetManager:assetManager, cameraState: $splatSceneCameraState)
 				.frame(minWidth: 300,maxWidth: .infinity,maxHeight: .infinity)
 		}
+	}
+	
+
+		
+	func SetSplatPose(cameraMeta:CameraMeta)
+	{
+		let transform = cameraMeta.camToWorld.transpose
+		
+		// Extract camera position (translation) from column 3
+		let position = SIMD3<Float>(
+			transform.columns.3.x,
+			transform.columns.3.y,
+			transform.columns.3.z
+		)
+		
+		// Extract rotation from the transform matrix
+		// In OpenGL camera-to-world convention:
+		// Column 0 = right vector
+		// Column 1 = up vector  
+		// Column 2 = forward (camera looks along -Z, so forward is +Z in world)
+		let forward = SIMD3<Float>(
+			transform.columns.2.x,
+			transform.columns.2.y,
+			transform.columns.2.z
+		)
+		let up = SIMD3<Float>(
+			transform.columns.1.x,
+			transform.columns.1.y,
+			transform.columns.1.z
+		)
+		
+		// Calculate yaw (rotation around Y axis) from forward vector
+		// atan2(x, z) gives angle in XZ plane
+		let yaw = atan2(forward.x, forward.z)
+		
+		// Calculate pitch (rotation around X axis)
+		// Project forward vector length in XZ plane, then get angle with Y component
+		let forwardXZ = sqrt(forward.x * forward.x + forward.z * forward.z)
+		let pitch = atan2(-forward.y, forwardXZ)
+		
+		// Calculate distance from origin (or from a target point if you have one)
+		let distance = length(position)
+		
+		// Update the camera state
+		// Note: You may need to adjust these assignments based on the actual
+		// properties available in SplatScene.CameraState
+		var newCameraState = SplatScene.CameraState()
+		
+		// If CameraState has these properties, uncomment and adjust as needed:
+		//newCameraState.position = position
+		newCameraState.yaw = Angle(radians:Double(yaw))
+		newCameraState.pitch = Angle(radians: Double(pitch))
+		newCameraState.distance = distance
+		newCameraState.lookAtPosition = SIMD3<Float>(0, 0, 0) // or calculate from forward vector
+		
+		// For now, since we don't know the exact structure of CameraState,
+		// we can try to construct it with the transform directly if supported:
+		self.splatSceneCameraState = newCameraState
+		
+		// Debug output to help verify the values
+		print("Camera Pose Copied:")
+		print("  Position: \(newCameraState.position) (expected \(position))")
+		print("  Yaw: \(yaw * 180 / .pi)°")
+		print("  Pitch: \(pitch * 180 / .pi)°")
+		print("  Distance: \(distance)")
 	}
 	
 	@State var loadCount = 0

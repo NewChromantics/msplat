@@ -155,8 +155,8 @@ struct MemorySummary: Sendable {
 final class Engine
 {
 	//	last Nth step render
-	var trainerRenderedImage: CGImage?
-	var trainerRenderedImage2: CGImage?
+	var trainerRenderedImage: (image:CGImage,meta:CameraMeta)?
+	var trainerRenderedImage2: (image:CGImage,meta:CameraMeta)?
 	var splats : [PlySplatPoint] = []
 	
 	var iteration: Int = 0
@@ -177,7 +177,7 @@ final class Engine
 		case error(Error)
 		case loading(String,URL?)
 		case training
-		case orbiting
+		case finished
 	}
 	
 	@MainActor deinit
@@ -329,6 +329,7 @@ final class Engine
 				{
 					let trainercgImage = try trainerRender.makeCGImage(useFloatComponents: true)
 					let splatRenderCgImage = try splatRender.makeCGImage(useFloatComponents: true)
+					let cameraMeta = renderCamera.meta
 					let iter = Int(stats.iteration)
 					let count = Int(stats.splatCount)
 					let elapsedSecs = batchEnd - startTime
@@ -340,11 +341,13 @@ final class Engine
 						cpuImagesMB: trainer.datasetCPUMemoryUsageMB,
 						splatCount: count
 					)
-					Task.detached {
+					
+					Task.detached 
+					{
 						await MainActor.run 
 						{
-							self.trainerRenderedImage = trainercgImage
-							self.trainerRenderedImage2 = splatRenderCgImage
+							self.trainerRenderedImage = (trainercgImage,cameraMeta)
+							self.trainerRenderedImage2 = (splatRenderCgImage,cameraMeta)
 							self.splats = splats
 							self.iteration = iter
 							self.splatCount = count
@@ -368,77 +371,12 @@ final class Engine
 		}
 		
 		let finalCount = trainer.splatCount
-		await MainActor.run {
+		await MainActor.run 
+		{
 			self.splatCount = finalCount
-			self.phase = .orbiting
+			self.phase = .finished
 		}
 		
-		/*
-		 
-		 // Phase 2: Smooth circular orbit with zero-copy render
-		 let poses = inputData.cameras.map { $0.meta.camToWorld }
-		 let orbit = computeOrbitParams(poses)
-		 var frameCount = 0
-		 var fpsTimer = CACurrentMediaTime()
-		 
-		 // Query dimensions once to pre-allocate RGBA buffer
-		 var imgW: Int = 0, imgH: Int = 0
-		 let firstPose = lookAtCamToWorld(eye: orbit.eyeCenter, target: orbit.lookAt, up: orbit.up)
-		 (imgW, imgH) = try trainer.renderFromPose(camToWorld: firstPose, refCameraIndex: 0, into: nil)
-		 let rgbaBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: imgW * imgH * 4)
-		 for i in 0..<(imgW * imgH) { rgbaBuf[i * 4 + 3] = 255 }
-		 
-		 let colorSpace = CGColorSpaceCreateDeviceRGB()
-		 let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-		 
-		 let orbitPeriod: Double = 7.5  // seconds per full revolution
-		 let orbitStart = CACurrentMediaTime()
-		 
-		 while true {
-		 let elapsed = CACurrentMediaTime() - orbitStart
-		 let angle = Float(elapsed / orbitPeriod) * 2.0 * .pi
-		 let cosA = cos(angle), sinA = sin(angle)
-		 let t1 = orbit.tangent1, t2 = orbit.tangent2
-		 let eye = (
-		 orbit.eyeCenter.0 + orbit.radius * (cosA * t1.0 + sinA * t2.0),
-		 orbit.eyeCenter.1 + orbit.radius * (cosA * t1.1 + sinA * t2.1),
-		 orbit.eyeCenter.2 + orbit.radius * (cosA * t1.2 + sinA * t2.2)
-		 )
-		 
-		 let pose = lookAtCamToWorld(eye: eye, target: orbit.lookAt, up: orbit.up)
-		 (imgW, imgH) = try trainer.renderFromPose(camToWorld: pose, refCameraIndex: 0, into: rgbaBuf)
-		 frameCount += 1
-		 
-		 var currentFps: Float = 0
-		 let now = CACurrentMediaTime()
-		 let dt = now - fpsTimer
-		 if dt >= 0.5 {
-		 currentFps = Float(frameCount) / Float(dt)
-		 frameCount = 0
-		 fpsTimer = now
-		 }
-		 
-		 // Only push to UI if main thread consumed previous frame
-		 if OSAtomicCompareAndSwap32(1, 0, &displayReady) {
-		 let provider = CGDataProvider(dataInfo: nil, data: rgbaBuf,
-		 size: imgW * imgH * 4,
-		 releaseData: { _, _, _ in })!
-		 let cgImg = CGImage(width: imgW, height: imgH,
-		 bitsPerComponent: 8, bitsPerPixel: 32,
-		 bytesPerRow: imgW * 4, space: colorSpace,
-		 bitmapInfo: bitmapInfo, provider: provider,
-		 decode: nil, shouldInterpolate: false,
-		 intent: .defaultIntent)!
-		 let img = NSImage(cgImage: cgImg, size: NSSize(width: imgW, height: imgH))
-		 let fpsVal = currentFps
-		 await MainActor.run {
-		 self.image = img
-		 if fpsVal > 0 { self.fps = fpsVal }
-		 OSAtomicCompareAndSwap32(0, 1, &displayReady)
-		 }
-		 }
-		 }
-		 */
 	}
 }
 
