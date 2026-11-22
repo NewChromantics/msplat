@@ -87,8 +87,8 @@ extension CameraMeta
 													viewMat: viewMat,
 													camToWorld: self.camToWorld)
 		
-		cameraRenderParams.projViewMat = try metalContext.makeEmpty([4, 4])
-		cameraRenderParams.projViewMat.copyIn(pvm)
+		// Convert pvm array to simd_float4x4
+		cameraRenderParams.projViewMat = simd_float4x4(colMajor:pvm)
 		cameraRenderParams.fovX = fovX
 		cameraRenderParams.fovY = fovY
 		return cameraRenderParams
@@ -757,7 +757,7 @@ final class Model
 			splatBuffers:splatBuffers, 
 			globScale: 1.0,
 			viewmat: cameraRenderParams.viewMat, 
-			projmat: cameraRenderParams.projViewMat.toFloat4x4(),
+			projmat: cameraRenderParams.projViewMat,
 			camPos: cameraRenderParams.camPos,
 			intrinsics: cameraRenderParams.intrinsics,
 			tileBounds: cameraRenderParams.tileBounds,
