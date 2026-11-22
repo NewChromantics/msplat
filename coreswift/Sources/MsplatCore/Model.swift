@@ -62,6 +62,10 @@ extension CameraMeta
 			0, 0, 1, 0,
 		]
 		
+		// Convert viewMatrix array to simd_float4x4
+		let viewMat = simd_float4x4(colMajor:viewMatrix)
+	
+		
 		// Compute projection * view matrix
 		var pvm = [Float](repeating: 0, count: 16)
 		for i in 0..<4 {
@@ -79,11 +83,10 @@ extension CameraMeta
 		var cameraRenderParams = CameraRenderParams(degrees:shDegrees,
 													degreesToUse: shDegreesToUse, 
 													tileBounds:tileBounds, 
-													intrinsics: cameraIntrinsics, 
+													intrinsics: cameraIntrinsics,
+													viewMat: viewMat,
 													camToWorld: self.camToWorld)
-		cameraRenderParams.viewMat = try metalContext.makeEmpty([4, 4])
-		cameraRenderParams.viewMat.copyIn(viewMatrix)
-		//cameraRenderParams.projectionMatrix = simd_float4x4(rowMajor:projectionMatrix)
+		
 		cameraRenderParams.projViewMat = try metalContext.makeEmpty([4, 4])
 		cameraRenderParams.projViewMat.copyIn(pvm)
 		cameraRenderParams.fovX = fovX
@@ -753,7 +756,7 @@ final class Model
 			numPoints: means.size(0),
 			splatBuffers:splatBuffers, 
 			globScale: 1.0,
-			viewmat: cameraRenderParams.viewMat.toFloat4x4(), 
+			viewmat: cameraRenderParams.viewMat, 
 			projmat: cameraRenderParams.projViewMat.toFloat4x4(),
 			camPos: cameraRenderParams.camPos,
 			intrinsics: cameraRenderParams.intrinsics,

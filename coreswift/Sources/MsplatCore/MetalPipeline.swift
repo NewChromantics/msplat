@@ -727,7 +727,7 @@ public func msplatRenderSplats(
 		numPoints: numSplats,
 		splatBuffers:splatBuffers,
 		globScale: 1.0,
-		viewmat: cameraRenderParams.viewMat.toFloat4x4(), 
+		viewmat: cameraRenderParams.viewMat, 
 		projmat: cameraRenderParams.projViewMat.toFloat4x4(),
 		camPos: cameraRenderParams.camPos, 
 		intrinsics: cameraRenderParams.intrinsics,

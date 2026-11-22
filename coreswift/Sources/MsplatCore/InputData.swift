@@ -92,26 +92,25 @@ public struct CameraRenderParams
 	public var degreesToUse: Int
 	public var tileBounds: (Int, Int, Int)
 	public var intrinsics : CameraIntrinsics
-	public var viewMat = MTensor()			//	world to camera
+	public var viewMat : simd_float4x4		//	world to camera
 	public var camToWorld : simd_float4x4
-	//public var projectionMatrix = simd_float4x4()
 	public var projViewMat = MTensor()
 	public var camPos: simd_float3	{	camToWorld.transpose.columns.3.xyz	}
 	public var fovX: Float = 0
 	public var fovY: Float = 0
 
-	public var isDefined: Bool { viewMat.defined && projViewMat.defined }
+	public var isDefined: Bool { projViewMat.defined }
 
 	public mutating func clear() 
 	{
-        viewMat.reset()
+        viewMat = simd_float4x4()
         projViewMat.reset()
         fovX = 0
         fovY = 0
     }
     
 	public var gpuMemoryUsage: Int {
-        viewMat.nbytes + projViewMat.nbytes
+        projViewMat.nbytes
     }
 }
 

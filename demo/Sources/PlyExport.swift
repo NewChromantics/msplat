@@ -8,10 +8,12 @@ extension simd_float3
 {
 	var floats : [Float]	{	[x,y,z]	}
 }
+
 extension simd_float4
 {
 	var floats : [Float]	{	[x,y,z,w]	}
 }
+
 extension simd_quatf
 {
 	var wxyzFloats : [Float]	
